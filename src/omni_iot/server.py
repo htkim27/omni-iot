@@ -109,6 +109,7 @@ def _turn_payload(result: TurnResult, audio_url: str | None) -> dict[str, object
     return {
         "turn_id": result.turn_id,
         "text": result.text,
+        "user_text": result.user_text,
         "audio_url": audio_url,
         "used_mock_omni": result.used_mock_omni,
         "used_tts": result.used_tts,

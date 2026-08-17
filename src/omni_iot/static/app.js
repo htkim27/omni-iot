@@ -146,7 +146,7 @@ async function finishSpeech() {
 }
 
 async function sendTurn(wavBlob) {
-  addTurn("user", "Voice turn");
+  const userTurn = addTurn("user", "Voice turn");
 
   try {
     const response = await fetch("/api/turn", {
@@ -164,6 +164,9 @@ async function sendTurn(wavBlob) {
 
     sessionId = payload.session_id;
     localStorage.setItem("omni_iot_session_id", sessionId);
+    if (payload.user_text) {
+      updateTurn(userTurn, payload.user_text);
+    }
     addTurn("assistant", payload.text, payload.timings);
     await playReply(payload);
   } catch (error) {
@@ -244,6 +247,14 @@ function addTurn(role, text, timings = null) {
   item.append(roleLabel, content);
   turnList.append(item);
   item.scrollIntoView({ block: "end", behavior: "smooth" });
+  return item;
+}
+
+function updateTurn(item, text) {
+  const content = item?.querySelector("p");
+  if (content) {
+    content.textContent = text;
+  }
 }
 
 function drawMeter() {

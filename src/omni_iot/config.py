@@ -40,6 +40,10 @@ class Settings:
     static_dir: Path = PROJECT_ROOT / "src" / "omni_iot" / "static"
     runtime_dir: Path = PROJECT_ROOT / ".runtime"
     runtime_turn_limit: int = _int_env("RUNTIME_TURN_LIMIT", 20)
+    conversation_history_messages: int = _int_env(
+        "CONVERSATION_HISTORY_MESSAGES",
+        12,
+    )
     omni_command: str | None = os.getenv("OMNI_COMMAND") or None
     tts_backend: str = os.getenv("TTS_BACKEND", "command").lower()
     tts_command: str | None = os.getenv("TTS_COMMAND") or None
@@ -59,6 +63,8 @@ def get_settings() -> Settings:
     settings = Settings()
     if settings.runtime_turn_limit < 1:
         raise ValueError("RUNTIME_TURN_LIMIT must be at least 1.")
+    if settings.conversation_history_messages < 0:
+        raise ValueError("CONVERSATION_HISTORY_MESSAGES must not be negative.")
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
     prune_runtime_turns(settings.runtime_dir, keep=settings.runtime_turn_limit)
     return settings

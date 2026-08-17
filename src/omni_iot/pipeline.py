@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from .runtime import prune_runtime_turns
 class TurnResult:
     turn_id: str
     text: str
+    user_text: str | None
     audio_path: Path | None
     used_mock_omni: bool
     used_tts: bool
@@ -42,25 +44,30 @@ def run_turn_pipeline(
     input_path.write_bytes(input_audio)
 
     started_at = time.perf_counter()
-    if session:
-        session.add_user_audio_turn()
+    history = (
+        session.prompt_history(settings.conversation_history_messages)
+        if session
+        else []
+    )
 
     omni_started_at = time.perf_counter()
-    text, used_mock = run_omni(input_path, settings)
+    omni_result = run_omni(input_path, settings, history=history)
     omni_elapsed = time.perf_counter() - omni_started_at
 
     if session:
-        session.add_assistant_message(text)
+        session.add_user_audio_turn(omni_result.user_text)
+        session.add_assistant_message(omni_result.text)
 
     tts_started_at = time.perf_counter()
-    audio_path = run_tts(text, turn_dir, settings)
+    audio_path = run_tts(omni_result.text, turn_dir, settings)
     tts_elapsed = time.perf_counter() - tts_started_at
 
     return TurnResult(
         turn_id=turn_id,
-        text=text,
+        text=omni_result.text,
+        user_text=omni_result.user_text,
         audio_path=audio_path,
-        used_mock_omni=used_mock,
+        used_mock_omni=omni_result.used_mock,
         used_tts=audio_path is not None,
         timings={
             "omni_seconds": round(omni_elapsed, 3),
@@ -74,17 +81,37 @@ def run_demo_pipeline(input_audio: bytes, settings: Settings) -> TurnResult:
     return run_turn_pipeline(input_audio, settings)
 
 
-def run_omni(input_path: Path, settings: Settings) -> tuple[str, bool]:
+@dataclass(frozen=True)
+class OmniResult:
+    text: str
+    user_text: str | None
+    used_mock: bool
+
+
+def run_omni(
+    input_path: Path,
+    settings: Settings,
+    history: list[dict[str, str]] | None = None,
+) -> OmniResult:
     if not settings.omni_command:
-        return (
-            "옴니 명령은 아직 연결되지 않았지만, 실시간 음성 하네스가 사용자의 음성 턴을 정상적으로 받았습니다.",
-            True,
+        return OmniResult(
+            text="옴니 명령은 아직 연결되지 않았지만, 실시간 음성 하네스가 사용자의 음성 턴을 정상적으로 받았습니다.",
+            user_text=None,
+            used_mock=True,
         )
 
+    history_payload = history or []
+    history_path = input_path.parent / "history.json"
+    history_path.write_text(
+        json.dumps(history_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     command = _format_command(
         settings.omni_command,
         audio=input_path,
         input=input_path,
+        history=json.dumps(history_payload, ensure_ascii=False),
+        history_file=history_path,
     )
     completed = subprocess.run(
         command,
@@ -102,12 +129,35 @@ def run_omni(input_path: Path, settings: Settings) -> tuple[str, bool]:
             f"stdout={completed.stdout.strip()}"
         )
 
-    response = completed.stdout.strip()
-    if not response:
-        response = completed.stderr.strip()
-    if not response:
+    output = completed.stdout.strip()
+    if not output:
+        output = completed.stderr.strip()
+    if not output:
         raise RuntimeError("OMNI command completed but produced no text output.")
-    return response, False
+    return _parse_omni_output(output)
+
+
+def _parse_omni_output(output: str) -> OmniResult:
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return OmniResult(text=output, user_text=None, used_mock=False)
+
+    if not isinstance(payload, dict):
+        return OmniResult(text=output, user_text=None, used_mock=False)
+
+    text = payload.get("text") or payload.get("response")
+    if not isinstance(text, str) or not text.strip():
+        return OmniResult(text=output, user_text=None, used_mock=False)
+
+    user_text = payload.get("user_text") or payload.get("transcript")
+    if not isinstance(user_text, str) or not user_text.strip():
+        user_text = None
+    return OmniResult(
+        text=text.strip(),
+        user_text=user_text.strip() if user_text else None,
+        used_mock=False,
+    )
 
 
 def run_tts(text: str, turn_dir: Path, settings: Settings) -> Path | None:

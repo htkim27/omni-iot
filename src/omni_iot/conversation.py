@@ -17,8 +17,10 @@ class ConversationSession:
     id: str
     messages: list[Message] = field(default_factory=list)
 
-    def add_user_audio_turn(self) -> None:
-        self.messages.append(Message(role="user", content="[voice input]"))
+    def add_user_audio_turn(self, transcript: str | None = None) -> None:
+        self.messages.append(
+            Message(role="user", content=transcript or "[voice input]")
+        )
 
     def add_assistant_message(self, text: str) -> None:
         self.messages.append(Message(role="assistant", content=text))
@@ -31,6 +33,14 @@ class ConversationSession:
                 "created_at": message.created_at,
             }
             for message in self.messages
+        ]
+
+    def prompt_history(self, max_messages: int) -> list[dict[str, str]]:
+        if max_messages <= 0:
+            return []
+        return [
+            {"role": message.role, "content": message.content}
+            for message in self.messages[-max_messages:]
         ]
 
 
