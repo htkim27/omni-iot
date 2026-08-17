@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .conversation import ConversationSession
 from .config import Settings
+from .runtime import prune_runtime_turns
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,11 @@ def run_turn_pipeline(
     turn_id = uuid.uuid4().hex
     turn_dir = settings.runtime_dir / turn_id
     turn_dir.mkdir(parents=True, exist_ok=True)
+    prune_runtime_turns(
+        settings.runtime_dir,
+        keep=settings.runtime_turn_limit,
+        protected={turn_dir},
+    )
 
     input_path = turn_dir / "input.wav"
     input_path.write_bytes(input_audio)

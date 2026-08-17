@@ -27,8 +27,8 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] FastAPI/uvicorn 기반 로컬 서버 구성
 - [x] `.env` 기반 런타임 설정 로딩
 - [x] 턴별 입력/출력을 `.runtime/<turn-id>/`에 저장
+- [x] UUID 형식의 runtime 턴 디렉터리를 최신 20개로 자동 정리
 - [ ] 자동화된 테스트 구성
-- [ ] 오래된 runtime artifact 정리 정책 추가
 
 지원 Python 범위는 `>=3.11,<3.13`입니다. 제공되는 명령은 다음과 같습니다.
 
@@ -71,6 +71,8 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [ ] 입력 WAV 형식과 크기 validation
 
 현재 conversation store는 프로세스 메모리에만 존재합니다. 서버 재시작 시 기록이 사라지며, transcript는 UI 표시용 상태일 뿐 OMNI 추론 context에는 아직 전달되지 않습니다.
+
+`.runtime` 정리는 서버 시작 및 새 턴 생성 시 실행됩니다. 기본 보존 개수는 `RUNTIME_TURN_LIMIT=20`이며, 자동 생성된 32자리 UUID 디렉터리만 대상으로 하므로 smoke test WAV나 사용자가 만든 다른 경로는 삭제하지 않습니다.
 
 현재 API:
 

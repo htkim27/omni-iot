@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .runtime import prune_runtime_turns
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,6 +39,7 @@ class Settings:
     project_root: Path = PROJECT_ROOT
     static_dir: Path = PROJECT_ROOT / "src" / "omni_iot" / "static"
     runtime_dir: Path = PROJECT_ROOT / ".runtime"
+    runtime_turn_limit: int = _int_env("RUNTIME_TURN_LIMIT", 20)
     omni_command: str | None = os.getenv("OMNI_COMMAND") or None
     tts_backend: str = os.getenv("TTS_BACKEND", "command").lower()
     tts_command: str | None = os.getenv("TTS_COMMAND") or None
@@ -54,5 +57,8 @@ class Settings:
 
 def get_settings() -> Settings:
     settings = Settings()
+    if settings.runtime_turn_limit < 1:
+        raise ValueError("RUNTIME_TURN_LIMIT must be at least 1.")
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
+    prune_runtime_turns(settings.runtime_dir, keep=settings.runtime_turn_limit)
     return settings
