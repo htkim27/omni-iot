@@ -15,31 +15,40 @@ const responseTokensValue = document.querySelector("#responseTokensValue");
 const ttsStepsSlider = document.querySelector("#ttsStepsSlider");
 const ttsStepsValue = document.querySelector("#ttsStepsValue");
 
+const TARGET_SAMPLE_RATE = 16000;
+
 let preRollSeconds = 0.45;
 let silenceEndMs = Number(silenceSlider.value);
 let maxTurnMs = 14000;
 let bargeInMultiplier = 1.4;
 let continueMultiplier = 0.72;
+let followUpTimeoutMs = 8000;
+let wakeWordLabel = "Hey Jarvis";
 let responseTokenLimit = Number(responseTokensSlider.value);
 let ttsNumSteps = Number(ttsStepsSlider.value);
 
 let audioContext;
-let analyser;
 let source;
 let processor;
 let zeroGain;
 let stream;
+let socket;
+let resampler;
 let animationFrame;
+let followUpTimer;
+let commandWaitTimer;
 let sessionId = localStorage.getItem("omni_iot_session_id");
 let state = "idle";
 let threshold = Number(thresholdSlider.value) / 100;
 let preRollChunks = [];
 let preRollLength = 0;
-let turnChunks = [];
-let turnLength = 0;
 let speechStartedAt = 0;
 let lastVoiceAt = 0;
 let latestRms = 0;
+let pendingUserTurn;
+let awaitingCommandVoice = false;
+let commandArmed = false;
+let stopping = false;
 
 thresholdValue.value = threshold.toFixed(2);
 
@@ -70,139 +79,330 @@ ttsStepsSlider.addEventListener("input", () => {
 void initializeSettings();
 
 async function startHarness() {
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-  });
-
-  audioContext = new AudioContext({ sampleRate: 16000 });
-  source = audioContext.createMediaStreamSource(stream);
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 512;
-  processor = audioContext.createScriptProcessor(2048, 1, 1);
-  zeroGain = audioContext.createGain();
-  zeroGain.gain.value = 0;
-
-  processor.onaudioprocess = handleAudioFrame;
-  source.connect(analyser);
-  source.connect(processor);
-  processor.connect(zeroGain);
-  zeroGain.connect(audioContext.destination);
-
+  stopping = false;
   startButton.disabled = true;
-  stopButton.disabled = false;
-  resetTurnBuffers();
-  setState("listening", "Listening");
-  drawMeter();
+  setState("connecting", "Connecting");
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+
+    audioContext = new AudioContext({ latencyHint: "interactive" });
+    await audioContext.resume();
+    resampler = new Pcm16Resampler(audioContext.sampleRate, TARGET_SAMPLE_RATE);
+    source = audioContext.createMediaStreamSource(stream);
+    processor = audioContext.createScriptProcessor(2048, 1, 1);
+    zeroGain = audioContext.createGain();
+    zeroGain.gain.value = 0;
+
+    processor.onaudioprocess = handleAudioFrame;
+    source.connect(processor);
+    processor.connect(zeroGain);
+    zeroGain.connect(audioContext.destination);
+
+    await connectAudioSocket();
+    stopButton.disabled = false;
+    resetAudioState();
+    setState("sleeping", `Say “${wakeWordLabel}”`);
+    drawMeter();
+  } catch (error) {
+    addTurn("system", error.message || String(error));
+    await stopHarness();
+  }
+}
+
+function connectAudioSocket() {
+  return new Promise((resolve, reject) => {
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${scheme}://${window.location.host}/ws/audio`);
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        type: "start",
+        sample_rate: TARGET_SAMPLE_RATE,
+        session_id: sessionId,
+        max_response_tokens: responseTokenLimit,
+        tts_num_steps: ttsNumSteps,
+      }));
+      resolve();
+    };
+    socket.onmessage = handleServerMessage;
+    socket.onerror = () => reject(new Error("Audio WebSocket connection failed."));
+    socket.onclose = () => {
+      if (!stopping && state !== "idle") {
+        addTurn("system", "Audio connection closed. Press Start to reconnect.");
+        void stopHarness();
+      }
+    };
+  });
 }
 
 async function stopHarness() {
+  stopping = true;
+  clearTimeout(followUpTimer);
+  clearTimeout(commandWaitTimer);
   cancelAnimationFrame(animationFrame);
   window.speechSynthesis?.cancel();
   replyAudio.pause();
   replyAudio.removeAttribute("src");
 
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.close(1000, "client stopped");
+  }
   processor?.disconnect();
-  analyser?.disconnect();
   source?.disconnect();
   zeroGain?.disconnect();
   stream?.getTracks().forEach((track) => track.stop());
   await audioContext?.close();
 
+  socket = undefined;
+  processor = undefined;
+  source = undefined;
+  zeroGain = undefined;
+  stream = undefined;
+  audioContext = undefined;
   startButton.disabled = false;
   stopButton.disabled = true;
-  resetTurnBuffers();
+  resetAudioState();
   setState("idle", "Idle");
 }
 
 function handleAudioFrame(event) {
-  if (!audioContext || state === "processing") {
+  if (!audioContext || !socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
 
-  const input = new Float32Array(event.inputBuffer.getChannelData(0));
+  const input = event.inputBuffer.getChannelData(0);
+  const pcm = resampler.process(input);
+  if (pcm.length === 0) {
+    return;
+  }
+
   const now = performance.now();
   latestRms = rms(input);
-  pushPreRoll(input);
+  pushPreRoll(pcm);
+  if (latestRms >= threshold * continueMultiplier) {
+    lastVoiceAt = now;
+  }
+
+  if (state === "sleeping") {
+    sendPcm(pcm);
+    return;
+  }
 
   if (state === "speaking" && latestRms >= threshold * bargeInMultiplier) {
     stopAssistantAudio();
-    beginSpeech(now);
-  }
-
-  if (state === "listening" && latestRms >= threshold) {
-    beginSpeech(now);
-  }
-
-  if (state === "recording") {
-    turnChunks.push(input);
-    turnLength += input.length;
-
-    if (latestRms >= threshold * continueMultiplier) {
-      lastVoiceAt = now;
-    }
-
-    const silenceElapsed = now - lastVoiceAt;
-    const turnElapsed = now - speechStartedAt;
-    if (silenceElapsed >= silenceEndMs || turnElapsed >= maxTurnMs) {
-      void finishSpeech();
-    }
-  }
-}
-
-function beginSpeech(now) {
-  turnChunks = [...preRollChunks];
-  turnLength = preRollLength;
-  speechStartedAt = now;
-  lastVoiceAt = now;
-  setState("recording", "Recording");
-}
-
-async function finishSpeech() {
-  if (state !== "recording" || turnLength === 0) {
+    beginActiveSpeech(now, "Recording interruption");
     return;
   }
 
-  setState("processing", "Thinking");
-  const wavBlob = encodeWav(turnChunks, turnLength, audioContext.sampleRate);
-  resetTurnBuffers();
-  await sendTurn(wavBlob);
+  if (state === "follow_up" && latestRms >= threshold) {
+    beginActiveSpeech(now, "Recording follow-up");
+    return;
+  }
+
+  if (state !== "recording") {
+    return;
+  }
+
+  if (awaitingCommandVoice) {
+    if (!commandArmed) {
+      if (latestRms < threshold * continueMultiplier) {
+        commandArmed = true;
+        resetPreRoll();
+      }
+      return;
+    }
+    if (latestRms < threshold) {
+      return;
+    }
+    awaitingCommandVoice = false;
+    commandArmed = false;
+    clearTimeout(commandWaitTimer);
+    speechStartedAt = now;
+    lastVoiceAt = now;
+    for (const chunk of preRollChunks) {
+      sendPcm(chunk);
+    }
+    resetPreRoll();
+    setState("recording", "Recording command");
+    return;
+  }
+
+  sendPcm(pcm);
+  const silenceElapsed = now - lastVoiceAt;
+  const turnElapsed = now - speechStartedAt;
+  if (silenceElapsed >= silenceEndMs || turnElapsed >= maxTurnMs) {
+    finishSpeech();
+  }
 }
 
-async function sendTurn(wavBlob) {
-  const userTurn = addTurn("user", "Voice turn");
+function beginActiveSpeech(now, label) {
+  clearTimeout(followUpTimer);
+  clearTimeout(commandWaitTimer);
+  awaitingCommandVoice = false;
+  commandArmed = false;
+  socket.send(JSON.stringify({ type: "speech_started" }));
+  setState("recording", label);
+  speechStartedAt = now;
+  lastVoiceAt = now;
+  for (const chunk of preRollChunks) {
+    sendPcm(chunk);
+  }
+}
 
+function finishSpeech() {
+  if (state !== "recording") {
+    return;
+  }
+  clearTimeout(commandWaitTimer);
+  awaitingCommandVoice = false;
+  commandArmed = false;
+  pendingUserTurn = addTurn("user", "Voice turn");
+  setState("processing", "Thinking");
+  socket.send(JSON.stringify({ type: "speech_ended" }));
+  resetPreRoll();
+}
+
+function handleServerMessage(event) {
+  let payload;
   try {
-    const response = await fetch("/api/turn", {
-      method: "POST",
-      headers: {
-        "Content-Type": "audio/wav",
-        "X-Response-Token-Limit": String(responseTokenLimit),
-        "X-TTS-Num-Steps": String(ttsNumSteps),
-        ...(sessionId ? { "X-Session-Id": sessionId } : {}),
-      },
-      body: wavBlob,
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.detail || "Request failed");
-    }
+    payload = JSON.parse(event.data);
+  } catch (error) {
+    console.warn("Invalid server event", error);
+    return;
+  }
 
+  if (payload.session_id) {
     sessionId = payload.session_id;
     localStorage.setItem("omni_iot_session_id", sessionId);
-    if (payload.user_text) {
-      updateTurn(userTurn, payload.user_text);
-    }
-    addTurn("assistant", payload.text, payload.timings);
-    await playReply(payload);
-  } catch (error) {
-    addTurn("system", error.message);
-    setState("listening", "Listening");
   }
+
+  if (payload.type === "wake_detected") {
+    clearTimeout(followUpTimer);
+    clearTimeout(commandWaitTimer);
+    awaitingCommandVoice = true;
+    commandArmed = false;
+    speechStartedAt = 0;
+    lastVoiceAt = 0;
+    resetPreRoll();
+    setState("recording", "Listening for command");
+    commandWaitTimer = setTimeout(() => {
+      if (state === "recording" && awaitingCommandVoice) {
+        socket?.send(JSON.stringify({ type: "sleep" }));
+        resetAudioState();
+        setState("sleeping", `Say “${wakeWordLabel}”`);
+      }
+    }, followUpTimeoutMs);
+  } else if (payload.type === "state") {
+    applyServerState(payload.state);
+  } else if (payload.type === "reply_audio") {
+    if (payload.user_text) {
+      updateTurn(pendingUserTurn, payload.user_text);
+    }
+    pendingUserTurn = undefined;
+    addTurn("assistant", payload.text, payload.timings);
+    void playReply(payload);
+  } else if (payload.type === "session_reset") {
+    turnList.replaceChildren();
+  } else if (payload.type === "error") {
+    addTurn("system", payload.message || "Audio pipeline error");
+  }
+}
+
+function applyServerState(serverState) {
+  if (serverState === "processing") {
+    if (!pendingUserTurn) {
+      pendingUserTurn = addTurn("user", "Voice turn");
+    }
+    setState("processing", "Thinking");
+  } else if (serverState === "recording") {
+    setState("recording", "Recording");
+  } else if (serverState === "sleeping") {
+    clearTimeout(followUpTimer);
+    resetAudioState();
+    setState("sleeping", `Say “${wakeWordLabel}”`);
+  } else if (serverState === "follow_up" && state !== "speaking") {
+    beginFollowUpWindow();
+  }
+}
+
+async function playReply(payload) {
+  setState("speaking", "Speaking");
+  if (payload.url || payload.audio_url) {
+    replyAudio.src = payload.url || payload.audio_url;
+    replyAudio.currentTime = 0;
+    replyAudio.onended = finishAssistantReply;
+    try {
+      await replyAudio.play();
+    } catch (error) {
+      addTurn("system", `Reply playback failed: ${error.message}`);
+      finishAssistantReply();
+    }
+    return;
+  }
+
+  if ("speechSynthesis" in window) {
+    const utterance = new SpeechSynthesisUtterance(payload.text);
+    utterance.lang = "ko-KR";
+    utterance.onend = finishAssistantReply;
+    utterance.onerror = finishAssistantReply;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    return;
+  }
+
+  finishAssistantReply();
+}
+
+function finishAssistantReply() {
+  if (state !== "speaking") {
+    return;
+  }
+  socket?.send(JSON.stringify({ type: "reply_ended" }));
+  beginFollowUpWindow();
+}
+
+function stopAssistantAudio() {
+  replyAudio.onended = null;
+  replyAudio.pause();
+  replyAudio.removeAttribute("src");
+  window.speechSynthesis?.cancel();
+}
+
+function beginFollowUpWindow() {
+  clearTimeout(followUpTimer);
+  resetPreRoll();
+  setState("follow_up", "Listening for follow-up");
+  followUpTimer = setTimeout(() => {
+    if (state === "follow_up") {
+      socket?.send(JSON.stringify({ type: "sleep" }));
+      setState("sleeping", `Say “${wakeWordLabel}”`);
+      resetAudioState();
+    }
+  }, followUpTimeoutMs);
+}
+
+async function resetSession() {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "reset_session" }));
+    return;
+  }
+
+  const response = await fetch("/api/session/reset", {
+    method: "POST",
+    headers: sessionId ? { "X-Session-Id": sessionId } : {},
+  });
+  const payload = await response.json();
+  sessionId = payload.session_id;
+  localStorage.setItem("omni_iot_session_id", sessionId);
+  turnList.replaceChildren();
 }
 
 async function initializeSettings() {
@@ -216,27 +416,13 @@ async function initializeSettings() {
     maxTurnMs = Number(config.vad.max_turn_ms);
     bargeInMultiplier = Number(config.vad.barge_in_multiplier);
     continueMultiplier = Number(config.vad.continue_multiplier);
+    followUpTimeoutMs = Number(config.wakeword.follow_up_timeout_ms);
+    wakeWordLabel = config.wakeword.label || wakeWordLabel;
 
-    setControl(
-      thresholdSlider,
-      "vad_threshold",
-      Math.round(Number(config.vad.threshold) * 100),
-    );
-    setControl(
-      silenceSlider,
-      "vad_silence_end_ms",
-      config.vad.silence_end_ms,
-    );
-    setControl(
-      responseTokensSlider,
-      "response_token_limit",
-      config.generation.max_response_tokens,
-    );
-    setControl(
-      ttsStepsSlider,
-      "tts_num_steps",
-      config.generation.tts_num_steps,
-    );
+    setControl(thresholdSlider, "vad_threshold", Math.round(Number(config.vad.threshold) * 100));
+    setControl(silenceSlider, "vad_silence_end_ms", config.vad.silence_end_ms);
+    setControl(responseTokensSlider, "response_token_limit", config.generation.max_response_tokens);
+    setControl(ttsStepsSlider, "tts_num_steps", config.generation.tts_num_steps);
   } catch (error) {
     console.warn(error);
   }
@@ -260,75 +446,45 @@ function saveSetting(key, value) {
   localStorage.setItem(`omni_iot_${key}`, String(value));
 }
 
-async function playReply(payload) {
-  if (payload.audio_url) {
-    setState("speaking", "Speaking");
-    replyAudio.src = payload.audio_url;
-    replyAudio.currentTime = 0;
-    replyAudio.onended = () => setState("listening", "Listening");
-    await replyAudio.play();
-    return;
-  }
-
-  if ("speechSynthesis" in window) {
-    setState("speaking", payload.used_mock_omni ? "Mock speaking" : "Speaking");
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(payload.text);
-    utterance.lang = "en-US";
-    utterance.onend = () => setState("listening", "Listening");
-    window.speechSynthesis.speak(utterance);
-    return;
-  }
-
-  setState("listening", "Listening");
-}
-
-async function resetSession() {
-  const response = await fetch("/api/session/reset", {
-    method: "POST",
-    headers: sessionId ? { "X-Session-Id": sessionId } : {},
-  });
-  const payload = await response.json();
-  sessionId = payload.session_id;
-  localStorage.setItem("omni_iot_session_id", sessionId);
-  turnList.replaceChildren();
-}
-
-function stopAssistantAudio() {
-  replyAudio.pause();
-  replyAudio.removeAttribute("src");
-  window.speechSynthesis?.cancel();
+function sendPcm(pcm) {
+  socket.send(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
 }
 
 function pushPreRoll(input) {
   preRollChunks.push(input);
   preRollLength += input.length;
-
-  const maxLength = Math.floor((audioContext?.sampleRate || 16000) * preRollSeconds);
+  const maxLength = Math.floor(TARGET_SAMPLE_RATE * preRollSeconds);
   while (preRollLength > maxLength && preRollChunks.length > 0) {
     const removed = preRollChunks.shift();
     preRollLength -= removed.length;
   }
 }
 
-function resetTurnBuffers() {
+function resetPreRoll() {
   preRollChunks = [];
   preRollLength = 0;
-  turnChunks = [];
-  turnLength = 0;
+}
+
+function resetAudioState() {
+  clearTimeout(commandWaitTimer);
+  awaitingCommandVoice = false;
+  commandArmed = false;
+  resetPreRoll();
+  resampler?.reset();
+  speechStartedAt = 0;
+  lastVoiceAt = 0;
+  latestRms = 0;
+  pendingUserTurn = undefined;
 }
 
 function addTurn(role, text, timings = null) {
   const item = document.createElement("li");
   item.className = `turn ${role}`;
-
   const roleLabel = document.createElement("span");
   roleLabel.className = "role";
   roleLabel.textContent = role;
-
   const content = document.createElement("p");
   content.textContent = timings ? `${text}  (${timings.total_seconds}s)` : text;
-
   item.append(roleLabel, content);
   turnList.append(item);
   item.scrollIntoView({ block: "end", behavior: "smooth" });
@@ -364,48 +520,38 @@ function rms(buffer) {
   return Math.sqrt(sum / buffer.length);
 }
 
-function encodeWav(channelBuffers, length, sampleRate) {
-  const samples = mergeBuffers(channelBuffers, length);
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buffer);
-
-  writeString(view, 0, "RIFF");
-  view.setUint32(4, 36 + samples.length * 2, true);
-  writeString(view, 8, "WAVE");
-  writeString(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(view, 36, "data");
-  view.setUint32(40, samples.length * 2, true);
-
-  floatTo16BitPcm(view, 44, samples);
-  return new Blob([view], { type: "audio/wav" });
-}
-
-function mergeBuffers(buffers, length) {
-  const result = new Float32Array(length);
-  let offset = 0;
-  for (const buffer of buffers) {
-    result.set(buffer, offset);
-    offset += buffer.length;
+class Pcm16Resampler {
+  constructor(inputRate, outputRate) {
+    this.ratio = inputRate / outputRate;
+    this.pending = new Float32Array(0);
+    this.position = 0;
   }
-  return result;
-}
 
-function floatTo16BitPcm(view, offset, input) {
-  for (let i = 0; i < input.length; i += 1, offset += 2) {
-    const sample = Math.max(-1, Math.min(1, input[i]));
-    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  process(input) {
+    const joined = new Float32Array(this.pending.length + input.length);
+    joined.set(this.pending);
+    joined.set(input, this.pending.length);
+    const samples = [];
+    while (this.position + 1 < joined.length) {
+      const left = Math.floor(this.position);
+      const fraction = this.position - left;
+      const value = joined[left] + (joined[left + 1] - joined[left]) * fraction;
+      samples.push(Math.max(-1, Math.min(1, value)));
+      this.position += this.ratio;
+    }
+
+    const consumed = Math.min(Math.floor(this.position), joined.length - 1);
+    this.pending = joined.slice(consumed);
+    this.position -= consumed;
+    const output = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i += 1) {
+      output[i] = samples[i] < 0 ? samples[i] * 0x8000 : samples[i] * 0x7fff;
+    }
+    return output;
   }
-}
 
-function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i += 1) {
-    view.setUint8(offset + i, string.charCodeAt(i));
+  reset() {
+    this.pending = new Float32Array(0);
+    this.position = 0;
   }
 }

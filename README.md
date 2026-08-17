@@ -10,7 +10,8 @@
 
 현재는 로컬 음성 대화 하네스의 첫 번째 end-to-end 프로토타입을 구현한 상태입니다.
 
-- 브라우저 마이크 입력, 발화 감지, WAV 업로드 및 응답 재생 구현
+- 브라우저 마이크 입력, `Hey Jarvis` 로컬 호출어, WebSocket PCM 스트리밍 및 응답 재생 구현
+- `sleeping → recording → processing → speaking → follow_up` 상태 기반 연속 대화 구현
 - Qwen3-Omni와 `llama.cpp`를 이용한 음성 입력 → 텍스트 응답 연결
 - k2-fsa/OmniVoice를 이용한 텍스트 → 음성 응답 연결
 - 대화 세션, 응답 중 끼어들기, 처리 시간 표시 등 기본 대화 기능 구현
@@ -21,12 +22,13 @@
 - CUDA 13.1/Blackwell 빌드에서 RTX 5070 Ti partial GPU 오프로딩 검증 완료
 - MCP 기반 IoT 제어와 방별 입출력 장치 연동은 이후 단계
 
-구현 단위의 상태, 알려진 문제와 다음 작업은 [docs/plan.md](docs/plan.md)를 참고하세요.
+구현 단위의 상태, 알려진 문제와 다음 작업은 [docs/plan.md](docs/plan.md)를, 장기 설계 원칙은 [ADR 0001](docs/adr/0001-design-philosophy.md)을 참고하세요.
 
 ## 아키텍처
 
 ```text
 마이크 / 방별 입력 장치
+  → openWakeWord `Hey Jarvis` 감지 (sleep → wake)
   → VAD 및 발화 구간 감지
   → Qwen3-Omni (llama.cpp)
   → 텍스트 응답 및 대화 상태
@@ -35,7 +37,9 @@
   → 브라우저 / 방별 스피커
 ```
 
-현재 구현은 브라우저를 입출력 장치로 사용합니다. 브라우저에서 16-bit mono WAV를 생성해 FastAPI 서버로 보내고, FastAPI가 상시 실행 중인 `llama-server`에 음성을 전달한 뒤 프로세스 내 OmniVoice 모델로 응답 WAV를 생성합니다.
+현재 구현은 브라우저를 입출력 장치로 사용합니다. 브라우저 입력을 16kHz 16-bit mono PCM으로 리샘플링해 `/ws/audio`로 계속 보내고, FastAPI의 경량 openWakeWord가 `Hey Jarvis`를 감지합니다. 호출어가 끝난 뒤 별도의 명령 음성이 시작될 때까지 기다리므로 호출어 자체가 하나의 질문으로 처리되지 않습니다. 발화가 끝나면 PCM을 WAV로 감싸 상시 실행 중인 `llama-server`에 전달하고, 프로세스 내 OmniVoice가 응답 음성을 생성합니다.
+
+응답 재생이 끝나면 8초 동안 호출어 없이 후속 질문을 받을 수 있습니다. 이 시간 안에 말하지 않으면 자동으로 sleep 상태로 돌아갑니다. OMNI 요청에서는 역할·출력 형식 지시를 system 메시지에 두고 user 메시지에는 오디오만 전달해, 모델이 내부 지시문을 사용자 transcript로 복사할 가능성을 줄였습니다.
 
 턴별 입력과 출력은 `.runtime/`에 저장하며 최신 20개만 유지합니다.
 
@@ -53,17 +57,30 @@
 
 ```bash
 uv sync
+# 공식 Hey Jarvis 모델 준비(최초 한 번)
+uv run omni-iot-wakeword-models
 cp .env.example .env
 uv run omni-iot --host 127.0.0.1 --port 8000
 ```
+
+모델 다운로드 명령은 최초 준비 단계에서만 인터넷을 사용합니다. 이후 호출어 인식과 음성 대화는 로컬 파일만 사용하며 실행 중 모델을 자동 다운로드하지 않습니다. 기본 모델은 openWakeWord가 제공하는 `hey_jarvis_v0.1.onnx`이고 호출 문구는 영어 `Hey Jarvis`입니다. Air-gapped 환경에서는 모델과 `melspectrogram.onnx`, `embedding_model.onnx`를 `models/openwakeword/`에 미리 복사하면 됩니다.
 
 첫 실행에서는 Qwen3-Omni와 OmniVoice를 메모리에 올린 뒤 서버가 준비되므로 시간이 걸릴 수 있습니다. 종료 시 함께 시작된 `llama-server`도 자동으로 종료됩니다.
 
 브라우저에서 <http://127.0.0.1:8000>을 열고 `Start`를 눌러 마이크 권한을 허용합니다.
 
+기본 사용 흐름은 다음과 같습니다.
+
+1. 화면이 `Say “Hey Jarvis”` 상태인지 확인합니다.
+2. “Hey Jarvis”라고 말하고 잠깐 멈춥니다.
+3. `Listening for command`가 표시되면 명령을 말합니다.
+4. 응답 재생 후 8초 안에는 호출어 없이 후속 질문을 이어갈 수 있습니다.
+
 `.env.example`은 RTX 5070 Ti에서 검증한 CUDA 13.1 기반 `llama-server` 20-layer offload와 OmniVoice 설정을 포함합니다. 해당 장비에서는 OMNI와 TTS를 동시에 실행해 약 13.0GB VRAM, warm end-to-end 3.84초를 확인했습니다. 모델 없이 브라우저 음성 흐름만 시험하려면 `OMNI_BACKEND=command`로 바꾸고 `OMNI_COMMAND`를 비워 mock 응답을 사용할 수 있습니다.
 
-`.env`는 API 키 전용 파일이 아니라 장비·실행 환경별 설정과 비밀값을 함께 두는 파일입니다. 현재는 모델 경로, GPU/서버 설정, VAD 기본값, 생성 기본값을 관리합니다. 실제 비밀값은 커밋하지 않는 `.env`에만 넣고, `.env.example`에는 이름과 안전한 예시값만 기록합니다. Threshold, 발화 종료 대기, 응답 토큰 상한, TTS 단계는 서버 기본값을 UI에 불러온 뒤 실행 중 변경할 수 있으며 브라우저별로 저장됩니다. 나머지 값은 `.env` 변경 후 서버를 재시작해야 적용됩니다.
+`.env`는 API 키 전용 파일이 아니라 장비·실행 환경별 설정과 비밀값을 함께 두는 파일입니다. 현재는 모델 경로, GPU/서버 설정, 호출어, VAD 기본값과 생성 옵션을 관리합니다. 각 값의 의미·단위·조절 효과는 [.env.example](.env.example)에 한글 주석으로 설명했습니다. 실제 비밀값은 커밋하지 않는 `.env`에만 넣습니다.
+
+Threshold, 발화 종료 대기, 응답 토큰 상한, TTS 단계는 UI에서 즉시 변경할 수 있으며 브라우저별 `localStorage`에 저장됩니다. 이 저장값은 이후 접속에서도 `.env` 기본값보다 우선합니다. 긴 문장이 중간에 잘리면 UI의 발화 종료 대기를 1200~1500ms로 늘리고, 14초 제한 자체를 늘리려면 `VAD_MAX_TURN_MS`를 수정한 뒤 서버를 재시작합니다.
 
 ### RTX 5070 Ti용 llama.cpp 빌드
 
@@ -115,6 +132,7 @@ uv run omni-iot-tts \
 ```text
 .
 ├── docs/plan.md                 # 세부 진행 상황과 단계별 계획
+├── docs/adr/                    # 장기 설계 결정 기록
 ├── models/                      # 로컬 GGUF 모델
 ├── src/omni_iot/
 │   ├── config.py                # 환경 설정
@@ -123,6 +141,7 @@ uv run omni-iot-tts \
 │   ├── pipeline.py              # OMNI → TTS 파이프라인
 │   ├── server.py                # FastAPI 서버
 │   ├── tts_omnivoice.py         # OmniVoice wrapper
+│   ├── wakeword.py              # openWakeWord 스트리밍 감지기
 │   └── static/                  # 브라우저 음성 UI
 ├── .env.example
 ├── pyproject.toml
@@ -138,3 +157,14 @@ uv run omni-iot-tts \
 5. 방별 입력 감지와 스피커 출력 라우팅
 
 현재 개발 범위는 1단계와 2단계입니다.
+
+## 테스트
+
+모델을 실제로 실행하지 않는 자동화 테스트는 다음 명령으로 확인합니다.
+
+```bash
+TTS_BACKEND=command OMNI_BACKEND=command \
+  uv run python -m unittest discover -s tests -v
+```
+
+WebSocket 상태 전이, 호출어 프레임 처리, 대화 history, OMNI 응답 파싱, runtime 정리를 포함합니다. 실제 마이크 음질, 호출어 민감도와 GPU peak VRAM은 목표 장비에서 별도 smoke test가 필요합니다.

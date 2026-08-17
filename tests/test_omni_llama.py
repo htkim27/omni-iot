@@ -32,8 +32,12 @@ class OmniLlamaTest(unittest.TestCase):
         )
         current_content = messages[-1]["content"]
         self.assertIsInstance(current_content, list)
-        self.assertEqual(current_content[-1]["type"], "input_audio")
-        self.assertEqual(current_content[-1]["input_audio"]["data"], "d2F2")
+        self.assertEqual(len(current_content), 1)
+        self.assertEqual(current_content[0]["type"], "input_audio")
+        self.assertEqual(current_content[0]["input_audio"]["data"], "d2F2")
+        self.assertNotIn("text", current_content[0])
+        self.assertIn("사용자의 음성 입력을 듣고", messages[0]["content"])
+        self.assertIn("키는 transcript와 response", messages[0]["content"])
 
     def test_server_client_parses_model_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

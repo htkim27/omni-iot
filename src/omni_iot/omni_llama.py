@@ -257,8 +257,13 @@ def _build_chat_messages(
     system_prompt: str = DEFAULT_SYSTEM,
     prompt: str = DEFAULT_PROMPT,
 ) -> list[dict[str, object]]:
+    system_instruction = (
+        f"{system_prompt}\n\n"
+        f"{prompt}\n\n"
+        f"{_structured_output_instruction()}"
+    )
     messages: list[dict[str, object]] = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": system_instruction},
     ]
     messages.extend(
         {"role": item["role"], "content": item["content"]}
@@ -269,13 +274,6 @@ def _build_chat_messages(
         {
             "role": "user",
             "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"{prompt}\n\n"
-                        f"{_structured_output_instruction()}"
-                    ),
-                },
                 {
                     "type": "input_audio",
                     "input_audio": {"data": audio_data, "format": "wav"},

@@ -60,8 +60,17 @@ body {
   background: #827a70;
 }
 
-.dot.listening {
+.dot.listening,
+.dot.follow_up {
   background: #69a0c8;
+}
+
+.dot.sleeping {
+  background: #8c78bd;
+}
+
+.dot.connecting {
+  background: #d9b85f;
 }
 
 .dot.recording {

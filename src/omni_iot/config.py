@@ -125,6 +125,16 @@ class Settings:
     vad_max_turn_ms: int = _int_env("VAD_MAX_TURN_MS", 14_000)
     vad_barge_in_multiplier: float = _float_env("VAD_BARGE_IN_MULTIPLIER", 1.4)
     vad_continue_multiplier: float = _float_env("VAD_CONTINUE_MULTIPLIER", 0.72)
+    wakeword_model: Path = _path_env(
+        "WAKEWORD_MODEL",
+        PROJECT_ROOT / "models" / "openwakeword" / "hey_jarvis_v0.1.onnx",
+    )
+    wakeword_label: str = os.getenv("WAKEWORD_LABEL", "Hey Jarvis")
+    wakeword_threshold: float = _float_env("WAKEWORD_THRESHOLD", 0.5)
+    wakeword_inference_framework: str = os.getenv(
+        "WAKEWORD_INFERENCE_FRAMEWORK", "onnx"
+    )
+    follow_up_timeout_ms: int = _int_env("FOLLOW_UP_TIMEOUT_MS", 8_000)
 
 
 def get_settings() -> Settings:
@@ -151,6 +161,14 @@ def get_settings() -> Settings:
         raise ValueError("VAD pre-roll/max-turn settings are invalid.")
     if settings.vad_barge_in_multiplier <= 0 or settings.vad_continue_multiplier <= 0:
         raise ValueError("VAD threshold multipliers must be positive.")
+    if not settings.wakeword_label.strip():
+        raise ValueError("WAKEWORD_LABEL must not be empty.")
+    if not 0 < settings.wakeword_threshold <= 1:
+        raise ValueError("WAKEWORD_THRESHOLD must be greater than 0 and at most 1.")
+    if settings.wakeword_inference_framework not in {"onnx", "tflite"}:
+        raise ValueError("WAKEWORD_INFERENCE_FRAMEWORK must be 'onnx' or 'tflite'.")
+    if settings.follow_up_timeout_ms < 1_000:
+        raise ValueError("FOLLOW_UP_TIMEOUT_MS must be at least 1000.")
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
     prune_runtime_turns(settings.runtime_dir, keep=settings.runtime_turn_limit)
     return settings

@@ -10,6 +10,8 @@
 
 ```text
 브라우저 음성 입력
+  → WebSocket 16kHz PCM streaming
+  → openWakeWord (sleep → wake)
   → VAD / turn detection
   → Qwen3-Omni 음성 이해 및 텍스트 응답
   → OmniVoice 음성 합성
@@ -37,11 +39,16 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 | `omni-iot` | FastAPI 음성 하네스 실행 |
 | `omni-iot-omni` | WAV를 Qwen3-Omni에 직접 입력 |
 | `omni-iot-tts` | 텍스트를 OmniVoice WAV로 합성 |
+| `omni-iot-wakeword-models` | 공식 openWakeWord 모델 준비 |
 
 ### 2.2 브라우저 음성 하네스
 
 - [x] 브라우저 마이크 권한 및 mono 입력 수집
-- [x] 입력을 16-bit PCM WAV로 인코딩
+- [x] 입력을 16kHz mono Int16 PCM으로 실시간 리샘플링
+- [x] `/ws/audio` WebSocket을 통한 연속 PCM 전송
+- [x] 서버의 openWakeWord `Hey Jarvis` 감지 및 wake event 전달
+- [x] 호출어 종료 후 별도 명령 음성을 기다리는 command-wait 단계
+- [x] sleep/recording/processing/speaking/follow-up 상태 전이
 - [x] RMS threshold 기반 VAD
 - [x] `.env` 기본값 기반 450ms pre-roll buffer
 - [x] UI에서 조절 가능한 무음 기준 발화 종료(기본 600ms)
@@ -52,11 +59,12 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] TTS WAV가 없을 때 브라우저 Speech Synthesis fallback
 - [x] 응답 재생 중 사용자 발화 감지 시 barge-in
 - [x] 턴 응답과 전체 처리 시간 표시
-- [ ] 실제 마이크로 반복 대화하며 listening 복귀까지 최종 검증
+- [x] 실제 마이크로 반복 대화하며 listening 복귀까지 최종 검증
+- [x] 응답 재생 후 8초 후속 대화 window와 자동 sleep 복귀
 - [ ] 환경별 echo와 배경 소음에서 VAD 안정성 측정
 - [ ] deprecated `ScriptProcessorNode`를 AudioWorklet 기반으로 교체 검토
 
-현재 VAD는 브라우저의 RMS 크기만 사용하는 프로토타입입니다. 서버 측 음성 모델이나 WebRTC VAD는 아직 사용하지 않습니다.
+현재 발화 VAD는 브라우저의 RMS 크기만 사용하는 프로토타입입니다. 서버는 호출어 감지에만 openWakeWord를 사용하며 발화 종료에는 WebRTC VAD 같은 별도 음성 모델을 사용하지 않습니다. 기본 600ms 무음 또는 14초 최대 길이에 도달하면 턴이 끝나므로, 긴 발화는 `VAD_SILENCE_END_MS`와 `VAD_MAX_TURN_MS` 조정이 필요합니다.
 
 UI에서 threshold, 발화 종료 대기, 응답 토큰 상한, TTS 생성 단계를 즉시 조절할 수 있으며 브라우저별 `localStorage`에 저장합니다. `.env`는 UI 최초 기본값과 pre-roll, 최대 턴, threshold 배수처럼 서버 시작 시 읽는 장비별 설정을 관리합니다.
 
@@ -70,6 +78,7 @@ UI에서 threshold, 발화 종료 대기, 응답 토큰 상한, TTS 생성 단�
 - [x] 비밀값을 제외한 UI 기본 설정 API
 - [x] 생성된 WAV 전달 API와 runtime 경로 검증
 - [x] 실제 대화 history를 다음 OMNI 프롬프트에 반영
+- [x] WebSocket 연결별 wake/turn/follow-up 대화 처리
 - [ ] 세션 만료 및 메모리 정리
 - [ ] 동시 요청과 여러 사용자에 대한 안전성 보강
 - [ ] 입력 WAV 형식과 크기 validation
@@ -84,6 +93,7 @@ UI에서 threshold, 발화 종료 대기, 응답 토큰 상한, TTS 생성 단�
 | --- | --- | --- |
 | `GET` | `/api/health` | OMNI/TTS 설정 여부 확인 |
 | `GET` | `/api/config` | UI용 VAD/생성 기본값 확인 |
+| `WS` | `/ws/audio` | 호출어 감지와 대화 턴용 실시간 PCM/event 스트림 |
 | `POST` | `/api/turn` | 세션 기반 WAV 턴 처리 |
 | `POST` | `/api/demo` | 세션 없는 단일 WAV 처리 |
 | `POST` | `/api/session/reset` | 세션 기록 초기화 |
@@ -96,6 +106,7 @@ UI에서 threshold, 발화 종료 대기, 응답 토큰 상한, TTS 생성 단�
 - [x] `llama-cli`, `llama-server`, `llama-mtmd-cli` build 확인
 - [x] Python CLI wrapper 구현
 - [x] WAV 입력, system prompt, user prompt 전달
+- [x] system 지시와 audio-only user 메시지 분리
 - [x] 텍스트 출력 정리 및 오류 전달
 - [x] 실제 WAV → Qwen3-Omni → 텍스트 응답 검증
 - [x] CPU 모드의 안정 동작 확인
@@ -130,7 +141,7 @@ LLAMA_FLASH_ATTN=off
 LLAMA_WARMUP=false
 ```
 
-기존 오류는 CUDA 12.4에서 Ada용 `sm_89`로 빌드한 바이너리를 Blackwell `sm_120` 장비에서 사용한 것이 원인이었습니다. CUDA Toolkit 13.1과 GCC 13으로 `sm_120a` 전용 빌드를 생성한 뒤 `SOFT_MAX failed / invalid argument`가 재현되지 않았습니다. 운영 기본값은 OMNI 20개 layer와 mmproj를 GPU에 올리며, OmniVoice를 동시에 실행한 실제 요청에서 약 13.0GB VRAM과 3.84초 end-to-end latency를 확인했습니다.
+기존 오류는 CUDA 12.4에서 Ada용 `sm_89`로 빌드한 바이너리를 Blackwell `sm_120` 장비에서 사용한 것이 원인이었습니다. CUDA Toolkit 13.1과 GCC 13으로 `sm_120a` 전용 빌드를 생성한 뒤 `SOFT_MAX failed / invalid argument`가 재현되지 않았습니다. 운영 안전 기준은 OMNI 20개 layer와 mmproj를 GPU에 올리는 구성으로, OmniVoice를 동시에 실행한 실제 요청에서 약 13.0GB VRAM과 3.84초 end-to-end latency를 확인했습니다. 16GB RTX 5070 Ti에서 26 layers는 OmniVoice 동시 상주 시 OOM이 발생했으므로 `.env.example`은 20 layers를 보수적 기본값으로 유지합니다.
 
 현재 wrapper가 기본으로 참조하는 build 구성:
 
@@ -202,6 +213,7 @@ OMNI command에서 사용할 수 있는 placeholder:
 | --- | --- |
 | `{audio}` | 입력 WAV 절대 경로 |
 | `{input}` | `{audio}`와 동일 |
+| `{history_file}` | 이전 대화 기록을 담은 UTF-8 JSON 파일 |
 
 TTS command에서 사용할 수 있는 placeholder:
 
@@ -226,22 +238,22 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 - [x] Python dependency 설치 및 CLI entry point 실행
 - [x] FastAPI 페이지와 API 로컬 실행
 - [x] 브라우저 WAV 생성 및 API 업로드
+- [x] 브라우저 WebSocket PCM streaming 및 wake event
 - [x] model/mmproj 로딩
 - [x] 실제 WAV에서 Qwen3-Omni 텍스트 생성
 - [x] OmniVoice 단독 smoke WAV 생성
 - [x] 실제 OMNI 텍스트로 TTS WAV 생성
 - [x] `/api/turn`에서 재생 가능한 `audio_url` 반환
+- [x] `Hey Jarvis → 명령 대기 → 응답 → follow-up → sleep` 반복 흐름
+- [x] system 지시와 user 오디오 분리
 
 남은 end-to-end 검증:
 
-- [ ] 브라우저 Start
-- [ ] 실제 사용자 발화 감지
-- [ ] 자동 turn 종료와 업로드
-- [ ] 실제 OMNI 응답
-- [ ] 실제 TTS 재생
-- [ ] 재생 종료 후 listening 복귀
-- [ ] 다음 발화 반복
-- [ ] 응답 도중 barge-in 반복
+- [ ] 다양한 거리·억양에서 `Hey Jarvis` false reject/accept 측정
+- [ ] echo와 배경 소음 환경의 VAD 보정
+- [ ] 긴 발화의 무음 종료 및 최대 턴 설정 검증
+- [ ] 응답 도중 barge-in 장시간 반복
+- [ ] 20~24 GPU layers별 peak VRAM과 latency 비교
 
 pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하며, 실제 음질과 브라우저 마이크 동작은 로컬 smoke test로 검증합니다.
 
@@ -266,13 +278,15 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 
 ### Phase 2 — 실시간 음성 루프
 
-상태: 프로토타입 구현, 실사용 검증 진행 중
+상태: 호출어 기반 연속 대화 프로토타입 구현, 환경별 튜닝 진행 중
 
-- [x] 브라우저 마이크/VAD/WAV 업로드
+- [x] 브라우저 마이크/VAD/WebSocket PCM streaming
+- [x] 로컬 openWakeWord sleep/wake gate
+- [x] 호출 후 명령 대기와 follow-up timeout
 - [x] 재생 queue의 기본 동작
 - [x] barge-in 기본 경로
 - [ ] 다양한 소음 환경에서 turn detection 보정
-- [ ] 반복 대화 안정성 검증
+- [x] 반복 대화 기본 흐름 검증
 
 ### Phase 3 — OMNI → TTS 통합
 
@@ -312,13 +326,12 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 
 다음 순서로 진행합니다.
 
-1. 브라우저 기반 전체 대화 반복 루프를 실제 환경에서 검증
-2. Qwen3-Omni의 RTX 5070 Ti CUDA 오류 재현 조건과 호환 build 확인
-3. OMNI/TTS 모델 상시 로딩으로 턴 지연 단축
-4. 세션 history를 실제 추론 context에 반영
-5. 자동화된 pipeline/API 테스트 추가
-6. MCP 클라이언트 설계와 최소 tool 호출 구현
-7. Android 및 방별 오디오 장치 연결
+1. 다양한 실제 환경에서 호출어와 VAD 민감도 보정
+2. AudioWorklet 전환과 장시간 WebSocket 안정성 검증
+3. 16GB VRAM 안에서 OMNI/TTS latency 추가 최적화
+4. transcript 오류 방어와 세션 수명 관리 보강
+5. MCP 클라이언트 설계와 최소 tool 호출 구현
+6. Android 및 방별 오디오 장치 연결
 
 ## 7. 완료 조건
 

@@ -5,3 +5,4 @@ __pycache__/
 .env
 vendor/
 models/*.gguf
+models/openwakeword/
