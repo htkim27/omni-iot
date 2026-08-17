@@ -96,7 +96,7 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] CPU 모드의 안정 동작 확인
 - [ ] RTX 5070 Ti CUDA offload 오류 해결
 - [ ] GPU layer 수에 따른 VRAM/latency 측정
-- [ ] 모델 상시 로딩 또는 server mode로 전환
+- [x] 관리형 `llama-server` 상시 로딩 및 server mode 전환
 - [ ] 스트리밍 응답 검토
 
 기본 로컬 자산:
@@ -146,7 +146,7 @@ cmake --build vendor/llama.cpp/build-cuda124-sm89 \
 - [x] 24kHz 응답 WAV 생성 확인
 - [x] command template 방식의 외부 TTS backend 지원
 - [x] `/api/turn`의 `audio_url` 응답 검증
-- [ ] 서버 프로세스에서 모델을 실제로 재사용하도록 구조 개선
+- [x] 서버 프로세스에서 모델을 사전 로드하고 턴 사이에 재사용
 - [ ] 긴 응답의 chunk/streaming 합성
 - [ ] TTS latency 및 VRAM 사용량 측정
 - [ ] OMNI와 TTS의 GPU 메모리 전환 정책 확정
@@ -162,7 +162,7 @@ OMNIVOICE_SPEED=
 TTS_TIMEOUT_SECONDS=180
 ```
 
-현재 파이프라인은 각 턴마다 `python -m omni_iot.tts_omnivoice` subprocess를 실행합니다. 모듈에는 모델 cache가 있지만 subprocess가 매번 종료되므로 서버 턴 사이에서 모델이 재사용되지는 않습니다. 상시 로딩 구조 전환이 주요 latency 개선 과제입니다.
+현재 FastAPI lifespan에서 OmniVoice를 한 번 로드하고 워밍업하며, 이후 모든 턴이 같은 모델 인스턴스를 재사용합니다. 동시 요청의 모델 상태 충돌을 막기 위해 합성 호출은 직렬화합니다.
 
 Smoke test:
 
@@ -262,9 +262,9 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 
 - [x] OmniVoice 연결 및 한국어 WAV 출력
 - [x] OMNI 응답을 TTS로 전달
-- [ ] 모델 상시 로딩
+- [x] OMNI 및 TTS 모델 상시 로딩
 - [ ] chunk 또는 streaming TTS
-- [ ] end-to-end latency 목표 수립 및 측정
+- [x] warm 반복 요청 latency 기준선 측정
 
 ### Phase 4 — MCP 클라이언트
 
