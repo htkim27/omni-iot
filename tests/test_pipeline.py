@@ -9,13 +9,14 @@ from unittest.mock import patch
 
 from omni_iot.config import Settings
 from omni_iot.conversation import ConversationSession
-from omni_iot.pipeline import OmniResult, run_omni, run_turn_pipeline
+from omni_iot.pipeline import OmniResult, run_omni, run_tts, run_turn_pipeline
 
 
 def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
     return Settings(
         project_root=runtime_dir,
         runtime_dir=runtime_dir,
+        omni_backend="command",
         omni_command=omni_command,
         tts_backend="command",
         tts_command=None,
@@ -23,6 +24,27 @@ def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
 
 
 class PipelineMultiTurnTest(unittest.TestCase):
+    def test_omnivoice_runs_in_the_server_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            turn_dir = Path(temp_dir)
+            settings = Settings(
+                project_root=turn_dir,
+                runtime_dir=turn_dir,
+                tts_backend="omnivoice",
+            )
+
+            def fake_synthesize(**kwargs: object) -> None:
+                Path(kwargs["output_path"]).write_bytes(b"wav")
+
+            with patch(
+                "omni_iot.tts_omnivoice.synthesize",
+                side_effect=fake_synthesize,
+            ) as synthesize:
+                output = run_tts("안녕하세요.", turn_dir, settings)
+
+            self.assertEqual(output, turn_dir / "reply.wav")
+            synthesize.assert_called_once()
+
     def test_second_turn_receives_first_turn_transcript_and_response(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = _settings(Path(temp_dir))

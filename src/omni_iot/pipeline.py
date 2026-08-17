@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from .conversation import ConversationSession
 from .config import Settings
@@ -26,10 +26,19 @@ class TurnResult:
     timings: dict[str, float] = field(default_factory=dict)
 
 
+class OmniServerClient(Protocol):
+    def generate(
+        self,
+        audio_path: Path,
+        history: list[dict[str, str]],
+    ) -> str: ...
+
+
 def run_turn_pipeline(
     input_audio: bytes,
     settings: Settings,
     session: ConversationSession | None = None,
+    omni_client: OmniServerClient | None = None,
 ) -> TurnResult:
     turn_id = uuid.uuid4().hex
     turn_dir = settings.runtime_dir / turn_id
@@ -51,7 +60,15 @@ def run_turn_pipeline(
     )
 
     omni_started_at = time.perf_counter()
-    omni_result = run_omni(input_path, settings, history=history)
+    if omni_client is None:
+        omni_result = run_omni(input_path, settings, history=history)
+    else:
+        omni_result = run_omni(
+            input_path,
+            settings,
+            history=history,
+            omni_client=omni_client,
+        )
     omni_elapsed = time.perf_counter() - omni_started_at
 
     if session:
@@ -77,8 +94,12 @@ def run_turn_pipeline(
     )
 
 
-def run_demo_pipeline(input_audio: bytes, settings: Settings) -> TurnResult:
-    return run_turn_pipeline(input_audio, settings)
+def run_demo_pipeline(
+    input_audio: bytes,
+    settings: Settings,
+    omni_client: OmniServerClient | None = None,
+) -> TurnResult:
+    return run_turn_pipeline(input_audio, settings, omni_client=omni_client)
 
 
 @dataclass(frozen=True)
@@ -92,7 +113,13 @@ def run_omni(
     input_path: Path,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    omni_client: OmniServerClient | None = None,
 ) -> OmniResult:
+    if settings.omni_backend == "server":
+        if omni_client is None:
+            raise RuntimeError("llama-server client is not initialized.")
+        return _parse_omni_output(omni_client.generate(input_path, history or []))
+
     if not settings.omni_command:
         return OmniResult(
             text="옴니 명령은 아직 연결되지 않았지만, 실시간 음성 하네스가 사용자의 음성 턴을 정상적으로 받았습니다.",
@@ -162,40 +189,17 @@ def _parse_omni_output(output: str) -> OmniResult:
 
 def run_tts(text: str, turn_dir: Path, settings: Settings) -> Path | None:
     if settings.tts_backend == "omnivoice":
-        output_path = turn_dir / "reply.wav"
-        command = [
-            sys.executable,
-            "-m",
-            "omni_iot.tts_omnivoice",
-            "--text",
-            text,
-            "--output",
-            str(output_path),
-            "--model-id",
-            settings.omnivoice_model_id,
-        ]
-        if settings.omnivoice_language:
-            command.extend(["--language", settings.omnivoice_language])
-        if settings.omnivoice_instruct:
-            command.extend(["--instruct", settings.omnivoice_instruct])
-        if settings.omnivoice_speed is not None:
-            command.extend(["--speed", str(settings.omnivoice_speed)])
+        from .tts_omnivoice import synthesize
 
-        completed = subprocess.run(
-            command,
-            cwd=settings.project_root,
-            capture_output=True,
-            text=True,
-            timeout=settings.tts_timeout_seconds,
-            check=False,
+        output_path = turn_dir / "reply.wav"
+        synthesize(
+            text=text,
+            output_path=output_path,
+            language=settings.omnivoice_language,
+            instruct=settings.omnivoice_instruct,
+            speed=settings.omnivoice_speed,
+            model_id=settings.omnivoice_model_id,
         )
-        if completed.returncode != 0:
-            raise RuntimeError(
-                "OmniVoice TTS command failed\n"
-                f"exit={completed.returncode}\n"
-                f"stderr={completed.stderr.strip()}\n"
-                f"stdout={completed.stdout.strip()}"
-            )
         if not output_path.exists():
             raise RuntimeError("OmniVoice TTS completed but produced no WAV output.")
         return output_path

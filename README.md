@@ -15,6 +15,7 @@
 - k2-fsa/OmniVoice를 이용한 텍스트 → 음성 응답 연결
 - 대화 세션, 응답 중 끼어들기, 처리 시간 표시 등 기본 대화 기능 구현
 - 사용자 발화 transcript와 최근 대화 history를 다음 OMNI 턴에 전달하는 멀티턴 구현
+- `llama-server`와 OmniVoice 모델을 서버 수명 동안 유지해 턴별 모델 재로딩 제거
 - 파일 단위의 실제 `OMNI → TTS` 전체 파이프라인 검증 완료
 - RTX 5070 Ti GPU 오프로딩 안정화 및 브라우저 전체 반복 루프 검증 진행 중
 - MCP 기반 IoT 제어와 방별 입출력 장치 연동은 이후 단계
@@ -33,7 +34,7 @@
   → 브라우저 / 방별 스피커
 ```
 
-현재 구현은 브라우저를 입출력 장치로 사용합니다. 브라우저에서 16-bit mono WAV를 생성해 FastAPI 서버로 보내고, 서버가 OMNI 추론과 TTS를 순서대로 실행한 뒤 응답 WAV를 돌려줍니다.
+현재 구현은 브라우저를 입출력 장치로 사용합니다. 브라우저에서 16-bit mono WAV를 생성해 FastAPI 서버로 보내고, FastAPI가 상시 실행 중인 `llama-server`에 음성을 전달한 뒤 프로세스 내 OmniVoice 모델로 응답 WAV를 생성합니다.
 
 턴별 입력과 출력은 `.runtime/`에 저장하며 최신 20개만 유지합니다.
 
@@ -55,9 +56,11 @@ cp .env.example .env
 uv run omni-iot --host 127.0.0.1 --port 8000
 ```
 
+첫 실행에서는 Qwen3-Omni와 OmniVoice를 메모리에 올린 뒤 서버가 준비되므로 시간이 걸릴 수 있습니다. 종료 시 함께 시작된 `llama-server`도 자동으로 종료됩니다.
+
 브라우저에서 <http://127.0.0.1:8000>을 열고 `Start`를 눌러 마이크 권한을 허용합니다.
 
-`.env.example`은 현재 검증된 CPU 기반 OMNI 설정과 OmniVoice TTS 설정을 포함합니다. `OMNI_COMMAND`가 비어 있으면 실제 모델 대신 mock 응답을 사용하므로 모델 없이도 브라우저 음성 흐름을 시험할 수 있습니다.
+`.env.example`은 현재 검증된 CPU 기반 `llama-server`와 OmniVoice 설정을 포함합니다. 모델 없이 브라우저 음성 흐름만 시험하려면 `OMNI_BACKEND=command`로 바꾸고 `OMNI_COMMAND`를 비워 mock 응답을 사용할 수 있습니다.
 
 ## 주요 명령
 

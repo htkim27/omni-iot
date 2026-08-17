@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 
 import soundfile as sf
 import torch
@@ -10,6 +11,29 @@ from omnivoice import OmniVoice
 
 
 SAMPLE_RATE = 24_000
+_generation_lock = Lock()
+
+
+def _generation_kwargs(
+    text: str,
+    ref_audio: Path | None = None,
+    ref_text: str | None = None,
+    language: str | None = "ko",
+    instruct: str | None = None,
+    speed: float | None = None,
+) -> dict[str, str | float]:
+    kwargs: dict[str, str | float] = {"text": text}
+    if language:
+        kwargs["language"] = language
+    if ref_audio:
+        kwargs["ref_audio"] = str(ref_audio)
+    if ref_text:
+        kwargs["ref_text"] = ref_text
+    if instruct:
+        kwargs["instruct"] = instruct
+    if speed is not None:
+        kwargs["speed"] = speed
+    return kwargs
 
 
 def synthesize(
@@ -22,27 +46,26 @@ def synthesize(
     speed: float | None = None,
     model_id: str = "k2-fsa/OmniVoice",
 ) -> None:
-    model = _load_model(model_id)
+    kwargs = _generation_kwargs(
+        text=text,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        language=language,
+        instruct=instruct,
+        speed=speed,
+    )
 
-    kwargs: dict[str, str | float] = {"text": text}
-    if language:
-        kwargs["language"] = language
-    if ref_audio:
-        kwargs["ref_audio"] = str(ref_audio)
-    if ref_text:
-        kwargs["ref_text"] = ref_text
-    if instruct:
-        kwargs["instruct"] = instruct
-    if speed:
-        kwargs["speed"] = speed
-
-    audio = model.generate(**kwargs)
+    # OmniVoice is shared by every turn in this process. Serialize generation so
+    # concurrent HTTP requests cannot mutate the model state at the same time.
+    with _generation_lock:
+        model = load_model(model_id)
+        audio = model.generate(**kwargs)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(output_path, audio[0], SAMPLE_RATE)
 
 
 @lru_cache(maxsize=1)
-def _load_model(model_id: str) -> OmniVoice:
+def load_model(model_id: str) -> OmniVoice:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device.startswith("cuda") else torch.float32
     return OmniVoice.from_pretrained(
@@ -52,8 +75,26 @@ def _load_model(model_id: str) -> OmniVoice:
     )
 
 
+def warmup_model(
+    model_id: str,
+    language: str | None = "ko",
+    instruct: str | None = None,
+    speed: float | None = None,
+) -> None:
+    with _generation_lock:
+        model = load_model(model_id)
+        model.generate(
+            **_generation_kwargs(
+                text="준비됐어요.",
+                language=language,
+                instruct=instruct,
+                speed=speed,
+            )
+        )
+
+
 def clear_model_cache() -> None:
-    _load_model.cache_clear()
+    load_model.cache_clear()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 

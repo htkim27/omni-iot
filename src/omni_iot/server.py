@@ -1,20 +1,57 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .config import get_settings
 from .conversation import ConversationStore
+from .omni_llama import LlamaServer
 from .pipeline import TurnResult, run_demo_pipeline, run_turn_pipeline
 
 
 settings = get_settings()
-app = FastAPI(title="omni-iot demo")
+omni_service = LlamaServer(settings) if settings.omni_backend == "server" else None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    tts_loaded = False
+    try:
+        if omni_service:
+            await asyncio.to_thread(omni_service.start)
+        if settings.tts_backend == "omnivoice":
+            from .tts_omnivoice import load_model, warmup_model
+
+            await asyncio.to_thread(load_model, settings.omnivoice_model_id)
+            tts_loaded = True
+            if settings.omnivoice_warmup:
+                await asyncio.to_thread(
+                    warmup_model,
+                    settings.omnivoice_model_id,
+                    settings.omnivoice_language,
+                    settings.omnivoice_instruct,
+                    settings.omnivoice_speed,
+                )
+        yield
+    finally:
+        if tts_loaded:
+            from .tts_omnivoice import clear_model_cache
+
+            clear_model_cache()
+        if omni_service:
+            await asyncio.to_thread(omni_service.stop)
+
+
+app = FastAPI(title="omni-iot demo", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
 conversations = ConversationStore()
 
@@ -31,7 +68,12 @@ async def demo(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="No audio bytes received.")
 
     try:
-        result = run_demo_pipeline(audio, settings)
+        result = await run_in_threadpool(
+            run_demo_pipeline,
+            audio,
+            settings,
+            omni_service,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -55,7 +97,13 @@ async def turn(
 
     session = conversations.get(x_session_id)
     try:
-        result = run_turn_pipeline(audio_bytes, settings, session=session)
+        result = await run_in_threadpool(
+            run_turn_pipeline,
+            audio_bytes,
+            settings,
+            session,
+            omni_service,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -80,7 +128,10 @@ def health() -> JSONResponse:
     return JSONResponse(
         {
             "ok": True,
-            "omni_configured": bool(settings.omni_command),
+            "omni_backend": settings.omni_backend,
+            "omni_configured": (
+                omni_service.ready if omni_service else bool(settings.omni_command)
+            ),
             "tts_backend": settings.tts_backend,
             "tts_configured": settings.tts_backend == "omnivoice" or bool(settings.tts_command),
         }

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import Settings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +25,239 @@ DEFAULT_SYSTEM = (
     "Answer naturally and concisely in Korean."
 )
 DEFAULT_PROMPT = "사용자의 음성 입력을 듣고 한국어로 자연스럽게 대답해줘."
+
+
+class LlamaServer:
+    """Own a llama-server process and send multimodal chat requests to it."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.base_url = (
+            f"http://{settings.llama_server_host}:{settings.llama_server_port}"
+        )
+        self.process: subprocess.Popen[str] | None = None
+        self._log_file = None
+        self.owns_process = False
+
+    @property
+    def ready(self) -> bool:
+        return self._is_healthy()
+
+    def start(self) -> None:
+        if self._is_healthy():
+            return
+
+        required_paths = (
+            self.settings.llama_server,
+            self.settings.omni_model,
+            self.settings.omni_mmproj,
+        )
+        missing = [str(path) for path in required_paths if not path.exists()]
+        if missing:
+            raise FileNotFoundError(
+                "llama-server assets not found: " + ", ".join(missing)
+            )
+
+        log_path = self.settings.runtime_dir / "llama-server.log"
+        self._log_file = log_path.open("w", encoding="utf-8")
+        self.process = subprocess.Popen(
+            self._command(),
+            cwd=self.settings.project_root,
+            stdout=self._log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        self.owns_process = True
+
+        deadline = time.monotonic() + self.settings.llama_server_startup_seconds
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                error = self._log_tail(log_path)
+                self.stop()
+                raise RuntimeError(
+                    "llama-server exited during startup.\n" + error
+                )
+            if self._is_healthy():
+                return
+            time.sleep(0.25)
+
+        self.stop()
+        raise TimeoutError(
+            "llama-server did not become ready within "
+            f"{self.settings.llama_server_startup_seconds} seconds. "
+            f"See {log_path}."
+        )
+
+    def stop(self) -> None:
+        if self.owns_process and self.process and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        self.process = None
+        self.owns_process = False
+        if self._log_file:
+            self._log_file.close()
+            self._log_file = None
+
+    def generate(
+        self,
+        audio_path: Path,
+        history: list[dict[str, str]],
+    ) -> str:
+        audio_data = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+        payload = {
+            "messages": _build_chat_messages(
+                audio_data=audio_data,
+                history=history,
+                system_prompt=os.getenv("OMNI_SYSTEM_PROMPT", DEFAULT_SYSTEM),
+                prompt=os.getenv("OMNI_PROMPT", DEFAULT_PROMPT),
+            ),
+            "max_tokens": self.settings.llama_n_predict,
+            "temperature": 0.2,
+            "cache_prompt": True,
+        }
+        response = self._request_json(
+            "/v1/chat/completions",
+            payload,
+            timeout=self.settings.omni_timeout_seconds,
+        )
+        try:
+            content = response["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                "llama-server returned an unexpected response: "
+                f"{json.dumps(response, ensure_ascii=False)}"
+            ) from exc
+
+        if isinstance(content, list):
+            content = "".join(
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("llama-server returned an empty assistant response.")
+
+        transcript, answer = _parse_model_turn(content)
+        return json.dumps(
+            {"user_text": transcript, "text": answer},
+            ensure_ascii=False,
+        )
+
+    def _command(self) -> list[str]:
+        command = [
+            str(self.settings.llama_server),
+            "-m",
+            str(self.settings.omni_model),
+            "--mmproj",
+            str(self.settings.omni_mmproj),
+            "--host",
+            self.settings.llama_server_host,
+            "--port",
+            str(self.settings.llama_server_port),
+            "--gpu-layers",
+            self.settings.llama_gpu_layers,
+            "--ctx-size",
+            str(self.settings.llama_ctx_size),
+            "--flash-attn",
+            self.settings.llama_flash_attn,
+            "--parallel",
+            "1",
+            "--cache-prompt",
+        ]
+        if self.settings.llama_device:
+            command.extend(["--device", self.settings.llama_device])
+        if not self.settings.llama_op_offload:
+            command.append("--no-op-offload")
+        if not self.settings.llama_mmproj_offload:
+            command.append("--no-mmproj-offload")
+        if not self.settings.llama_warmup:
+            command.append("--no-warmup")
+        return command
+
+    def _is_healthy(self) -> bool:
+        try:
+            with urllib.request.urlopen(
+                f"{self.base_url}/health",
+                timeout=1,
+            ) as response:
+                return response.status == 200
+        except (OSError, urllib.error.URLError):
+            return False
+
+    def _request_json(
+        self,
+        path: str,
+        payload: dict[str, object],
+        timeout: int,
+    ) -> dict[str, object]:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"llama-server request failed ({exc.code}): {detail}"
+            ) from exc
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"llama-server request failed: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError("llama-server response must be a JSON object.")
+        return parsed
+
+    @staticmethod
+    def _log_tail(path: Path, lines: int = 30) -> str:
+        if not path.exists():
+            return "No llama-server log was created."
+        content = path.read_text(encoding="utf-8", errors="replace")
+        return "\n".join(content.splitlines()[-lines:])
+
+
+def _build_chat_messages(
+    audio_data: str,
+    history: list[dict[str, str]],
+    system_prompt: str = DEFAULT_SYSTEM,
+    prompt: str = DEFAULT_PROMPT,
+) -> list[dict[str, object]]:
+    messages: list[dict[str, object]] = [
+        {"role": "system", "content": system_prompt},
+    ]
+    messages.extend(
+        {"role": item["role"], "content": item["content"]}
+        for item in history
+        if item.get("role") in {"user", "assistant"} and item.get("content")
+    )
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"{prompt}\n\n"
+                        "반드시 다른 설명이나 Markdown 없이 아래 JSON 객체만 출력하라.\n"
+                        '{"transcript":"사용자가 실제로 말한 내용",'
+                        '"response":"사용자에게 말할 한국어 응답"}'
+                    ),
+                },
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": audio_data, "format": "wav"},
+                },
+            ],
+        }
+    )
+    return messages
 
 
 def _load_dotenv(path: Path) -> None:
