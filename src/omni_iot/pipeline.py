@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from .conversation import ConversationSession
+from .conversation import ConversationSession, normalize_user_transcript
 from .config import Settings
 from .runtime import prune_runtime_turns
 
@@ -197,12 +197,12 @@ def _parse_omni_output(output: str) -> OmniResult:
     if not isinstance(text, str) or not text.strip():
         return OmniResult(text=output, user_text=None, used_mock=False)
 
-    user_text = payload.get("user_text") or payload.get("transcript")
-    if not isinstance(user_text, str) or not user_text.strip():
-        user_text = None
+    user_text = normalize_user_transcript(
+        payload.get("user_text") or payload.get("transcript")
+    )
     return OmniResult(
         text=text.strip(),
-        user_text=user_text.strip() if user_text else None,
+        user_text=user_text,
         used_mock=False,
     )
 

@@ -70,8 +70,7 @@ class OmniLlamaTest(unittest.TestCase):
 
         self.assertIn("conversation_history", prompt)
         self.assertIn("내 이름은 민수야", prompt)
-        self.assertIn('"transcript"', prompt)
-        self.assertIn('"response"', prompt)
+        self.assertIn("키는 transcript와 response", prompt)
 
     def test_parse_model_turn_accepts_fenced_json(self) -> None:
         transcript, response = _parse_model_turn(
@@ -86,6 +85,21 @@ class OmniLlamaTest(unittest.TestCase):
 
         self.assertIsNone(transcript)
         self.assertEqual(response, "그대로 사용할 응답")
+
+    def test_parse_model_turn_discards_copied_transcript_placeholder(self) -> None:
+        transcript, response = _parse_model_turn(
+            '{"transcript":"사용자가 실제로 말한 내용",'
+            '"response":"다시 말씀해 주세요."}'
+        )
+
+        self.assertIsNone(transcript)
+        self.assertEqual(response, "다시 말씀해 주세요.")
+
+    def test_prompt_does_not_contain_copyable_transcript_example(self) -> None:
+        prompt = _build_turn_prompt("대답해줘.", [])
+
+        self.assertNotIn("사용자가 실제로 말한 내용", prompt)
+        self.assertIn("발화를 판별할 수 없으면 null", prompt)
 
     def test_load_history_filters_invalid_messages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

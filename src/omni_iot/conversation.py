@@ -5,6 +5,25 @@ import uuid
 from dataclasses import dataclass, field
 
 
+_TRANSCRIPT_PLACEHOLDERS = frozenset(
+    {
+        "사용자가 실제로 말한 내용",
+        "사용자의 실제 발화 내용",
+        "actual words spoken by the user",
+        "user's actual spoken words",
+    }
+)
+
+
+def normalize_user_transcript(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.casefold() in _TRANSCRIPT_PLACEHOLDERS:
+        return None
+    return normalized
+
+
 @dataclass(frozen=True)
 class Message:
     role: str
@@ -18,6 +37,7 @@ class ConversationSession:
     messages: list[Message] = field(default_factory=list)
 
     def add_user_audio_turn(self, transcript: str | None = None) -> None:
+        transcript = normalize_user_transcript(transcript)
         self.messages.append(
             Message(role="user", content=transcript or "[voice input]")
         )

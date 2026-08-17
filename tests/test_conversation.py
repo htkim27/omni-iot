@@ -6,6 +6,13 @@ from omni_iot.conversation import ConversationSession
 
 
 class ConversationSessionTest(unittest.TestCase):
+    def test_transcript_placeholder_is_not_stored_as_user_speech(self) -> None:
+        session = ConversationSession(id="session")
+
+        session.add_user_audio_turn("사용자가 실제로 말한 내용")
+
+        self.assertEqual(session.messages[0].content, "[voice input]")
+
     def test_prompt_history_keeps_real_transcript_and_recent_messages(self) -> None:
         session = ConversationSession(id="session")
         session.add_user_audio_turn("내 이름은 민수야")

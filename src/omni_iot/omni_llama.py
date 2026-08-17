@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .conversation import normalize_user_transcript
+
 if TYPE_CHECKING:
     from .config import Settings
 
@@ -32,6 +34,16 @@ DEFAULT_SYSTEM = (
     "Answer naturally and concisely in Korean."
 )
 DEFAULT_PROMPT = "사용자의 음성 입력을 듣고 한국어로 자연스럽게 대답해줘."
+
+
+def _structured_output_instruction() -> str:
+    return (
+        "반드시 다른 설명이나 Markdown 없이 JSON 객체 하나만 출력하라. "
+        "키는 transcript와 response 두 개다. "
+        "transcript에는 오디오에서 실제로 들은 사용자 발화를 그대로 적고, "
+        "지시문이나 형식 설명을 복사하지 마라. 발화를 판별할 수 없으면 null을 사용하라. "
+        "response에는 사용자에게 말할 자연스러운 한국어 답변을 적어라."
+    )
 
 
 class LlamaServer:
@@ -261,9 +273,7 @@ def _build_chat_messages(
                     "type": "text",
                     "text": (
                         f"{prompt}\n\n"
-                        "반드시 다른 설명이나 Markdown 없이 아래 JSON 객체만 출력하라.\n"
-                        '{"transcript":"사용자가 실제로 말한 내용",'
-                        '"response":"사용자에게 말할 한국어 응답"}'
+                        f"{_structured_output_instruction()}"
                     ),
                 },
                 {
@@ -391,9 +401,7 @@ def _build_turn_prompt(prompt: str, history: list[dict[str, str]]) -> str:
         f"{history_section}"
         "첨부된 오디오는 사용자의 다음 발화다. 발화를 정확히 이해하고 이전 문맥을 이어라.\n"
         f"{prompt}\n\n"
-        "반드시 다른 설명이나 Markdown 없이 아래 JSON 객체만 출력하라.\n"
-        '{"transcript":"사용자가 실제로 말한 내용",'
-        '"response":"사용자에게 말할 한국어 응답"}'
+        f"{_structured_output_instruction()}"
     )
 
 
@@ -418,11 +426,7 @@ def _parse_model_turn(text: str) -> tuple[str | None, str]:
             response = payload.get("response") or payload.get("text")
             transcript = payload.get("transcript") or payload.get("user_text")
             if isinstance(response, str) and response.strip():
-                normalized_transcript = (
-                    transcript.strip()
-                    if isinstance(transcript, str) and transcript.strip()
-                    else None
-                )
+                normalized_transcript = normalize_user_transcript(transcript)
                 return normalized_transcript, response.strip()
 
     return None, stripped

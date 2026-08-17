@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 from omni_iot.config import Settings
 from omni_iot.conversation import ConversationSession
-from omni_iot.pipeline import OmniResult, run_omni, run_tts, run_turn_pipeline
+from omni_iot.pipeline import (
+    OmniResult,
+    _parse_omni_output,
+    run_omni,
+    run_tts,
+    run_turn_pipeline,
+)
 
 
 def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
@@ -24,6 +30,14 @@ def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
 
 
 class PipelineMultiTurnTest(unittest.TestCase):
+    def test_external_backend_transcript_placeholder_is_discarded(self) -> None:
+        result = _parse_omni_output(
+            '{"user_text":"사용자가 실제로 말한 내용","text":"괜찮아요."}'
+        )
+
+        self.assertIsNone(result.user_text)
+        self.assertEqual(result.text, "괜찮아요.")
+
     def test_omnivoice_runs_in_the_server_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             turn_dir = Path(temp_dir)
