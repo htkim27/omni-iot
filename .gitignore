@@ -1,0 +1,8 @@
+.venv/
+.runtime/
+__pycache__/
+*.py[cod]
+.env
+vendor/
+models/*.gguf
+models/openwakeword/
