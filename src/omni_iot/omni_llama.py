@@ -114,6 +114,7 @@ class LlamaServer:
         self,
         audio_path: Path,
         history: list[dict[str, str]],
+        max_tokens: int | None = None,
     ) -> str:
         audio_data = base64.b64encode(audio_path.read_bytes()).decode("ascii")
         payload = {
@@ -123,9 +124,11 @@ class LlamaServer:
                 system_prompt=os.getenv("OMNI_SYSTEM_PROMPT", DEFAULT_SYSTEM),
                 prompt=os.getenv("OMNI_PROMPT", DEFAULT_PROMPT),
             ),
-            "max_tokens": self.settings.llama_n_predict,
-            "temperature": 0.2,
-            "cache_prompt": True,
+            "max_tokens": (
+                max_tokens if max_tokens is not None else self.settings.llama_n_predict
+            ),
+            "temperature": self.settings.llama_temperature,
+            "cache_prompt": self.settings.llama_cache_prompt,
         }
         response = self._request_json(
             "/v1/chat/completions",
@@ -173,9 +176,15 @@ class LlamaServer:
             "--flash-attn",
             self.settings.llama_flash_attn,
             "--parallel",
-            "1",
-            "--cache-prompt",
+            str(self.settings.llama_parallel),
+            "--threads",
+            str(self.settings.llama_threads),
         ]
+        command.append(
+            "--cache-prompt"
+            if self.settings.llama_cache_prompt
+            else "--no-cache-prompt"
+        )
         if self.settings.llama_device:
             command.extend(["--device", self.settings.llama_device])
         if not self.settings.llama_op_offload:

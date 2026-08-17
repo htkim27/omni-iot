@@ -34,6 +34,20 @@ def _int_env(name: str, default: int) -> int:
     return int(value)
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    return float(value)
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def _path_env(name: str, default: Path) -> Path:
     path = Path(os.getenv(name, default))
     return path if path.is_absolute() else PROJECT_ROOT / path
@@ -81,6 +95,10 @@ class Settings:
     ).lower() in {"1", "true", "yes", "on"}
     llama_ctx_size: int = _int_env("LLAMA_CTX_SIZE", 4096)
     llama_n_predict: int = _int_env("LLAMA_N_PREDICT", 192)
+    llama_temperature: float = _float_env("LLAMA_TEMPERATURE", 0.2)
+    llama_parallel: int = _int_env("LLAMA_PARALLEL", 1)
+    llama_threads: int = _int_env("LLAMA_THREADS", 8)
+    llama_cache_prompt: bool = _bool_env("LLAMA_CACHE_PROMPT", True)
     llama_flash_attn: str = os.getenv("LLAMA_FLASH_ATTN", "off")
     llama_warmup: bool = os.getenv("LLAMA_WARMUP", "false").lower() in {
         "1", "true", "yes", "on",
@@ -100,6 +118,13 @@ class Settings:
     omnivoice_warmup: bool = os.getenv("OMNIVOICE_WARMUP", "true").lower() in {
         "1", "true", "yes", "on",
     }
+    omnivoice_num_steps: int = _int_env("OMNIVOICE_NUM_STEPS", 32)
+    vad_threshold: float = _float_env("VAD_THRESHOLD", 0.04)
+    vad_silence_end_ms: int = _int_env("VAD_SILENCE_END_MS", 600)
+    vad_pre_roll_ms: int = _int_env("VAD_PRE_ROLL_MS", 450)
+    vad_max_turn_ms: int = _int_env("VAD_MAX_TURN_MS", 14_000)
+    vad_barge_in_multiplier: float = _float_env("VAD_BARGE_IN_MULTIPLIER", 1.4)
+    vad_continue_multiplier: float = _float_env("VAD_CONTINUE_MULTIPLIER", 0.72)
 
 
 def get_settings() -> Settings:
@@ -110,6 +135,22 @@ def get_settings() -> Settings:
         raise ValueError("CONVERSATION_HISTORY_MESSAGES must not be negative.")
     if settings.omni_backend not in {"command", "server"}:
         raise ValueError("OMNI_BACKEND must be either 'command' or 'server'.")
+    if not 16 <= settings.llama_n_predict <= 512:
+        raise ValueError("LLAMA_N_PREDICT must be between 16 and 512.")
+    if not 0 <= settings.llama_temperature <= 2:
+        raise ValueError("LLAMA_TEMPERATURE must be between 0 and 2.")
+    if settings.llama_parallel < 1 or settings.llama_threads < 1:
+        raise ValueError("LLAMA_PARALLEL and LLAMA_THREADS must be at least 1.")
+    if not 4 <= settings.omnivoice_num_steps <= 64:
+        raise ValueError("OMNIVOICE_NUM_STEPS must be between 4 and 64.")
+    if not 0.01 <= settings.vad_threshold <= 0.2:
+        raise ValueError("VAD_THRESHOLD must be between 0.01 and 0.2.")
+    if not 250 <= settings.vad_silence_end_ms <= 2_000:
+        raise ValueError("VAD_SILENCE_END_MS must be between 250 and 2000.")
+    if settings.vad_pre_roll_ms < 0 or settings.vad_max_turn_ms < 1_000:
+        raise ValueError("VAD pre-roll/max-turn settings are invalid.")
+    if settings.vad_barge_in_multiplier <= 0 or settings.vad_continue_multiplier <= 0:
+        raise ValueError("VAD threshold multipliers must be positive.")
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
     prune_runtime_turns(settings.runtime_dir, keep=settings.runtime_turn_limit)
     return settings

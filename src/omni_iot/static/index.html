@@ -35,7 +35,7 @@
               id="thresholdSlider"
               type="range"
               min="1"
-              max="12"
+              max="20"
               value="4"
               aria-describedby="thresholdHelp"
             />
@@ -44,6 +44,60 @@
           <p id="thresholdHelp" class="settings-help">
             마이크 음량이 이 값 이상이면 발화로 인식합니다. 낮을수록 작은 소리에도 민감하며,
             주변 소음에 자주 반응하면 값을 높이세요.
+          </p>
+
+          <div class="settings-row">
+            <label for="silenceSlider">발화 종료 대기</label>
+            <input
+              id="silenceSlider"
+              type="range"
+              min="250"
+              max="2000"
+              step="50"
+              value="600"
+              aria-describedby="silenceHelp"
+            />
+            <output id="silenceValue" for="silenceSlider">600ms</output>
+          </div>
+          <p id="silenceHelp" class="settings-help">
+            마지막 음성 이후 이 시간만큼 조용하면 발화를 전송합니다. 낮추면 빨라지지만
+            문장 중간의 짧은 쉼을 종료로 판단할 수 있습니다.
+          </p>
+
+          <div class="settings-row">
+            <label for="responseTokensSlider">응답 길이 상한</label>
+            <input
+              id="responseTokensSlider"
+              type="range"
+              min="16"
+              max="512"
+              step="16"
+              value="192"
+              aria-describedby="responseTokensHelp"
+            />
+            <output id="responseTokensValue" for="responseTokensSlider">192 tokens</output>
+          </div>
+          <p id="responseTokensHelp" class="settings-help">
+            OMNI가 한 턴에서 생성할 최대 토큰 수입니다. 낮추면 긴 응답의 지연을 줄이지만
+            답변이 잘릴 수 있습니다.
+          </p>
+
+          <div class="settings-row">
+            <label for="ttsStepsSlider">TTS 품질 단계</label>
+            <input
+              id="ttsStepsSlider"
+              type="range"
+              min="4"
+              max="64"
+              step="4"
+              value="32"
+              aria-describedby="ttsStepsHelp"
+            />
+            <output id="ttsStepsValue" for="ttsStepsSlider">32 steps</output>
+          </div>
+          <p id="ttsStepsHelp" class="settings-help">
+            OmniVoice 생성 반복 횟수입니다. 낮추면 합성이 빨라질 수 있지만 음질이
+            떨어질 수 있으므로 실제 목소리를 들으며 조절하세요.
           </p>
         </div>
 

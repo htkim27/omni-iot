@@ -44,6 +44,27 @@ class PipelineMultiTurnTest(unittest.TestCase):
 
             self.assertEqual(output, turn_dir / "reply.wav")
             synthesize.assert_called_once()
+            self.assertEqual(synthesize.call_args.kwargs["num_steps"], 32)
+
+    def test_omnivoice_accepts_per_turn_step_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            turn_dir = Path(temp_dir)
+            settings = Settings(
+                project_root=turn_dir,
+                runtime_dir=turn_dir,
+                tts_backend="omnivoice",
+            )
+
+            def fake_synthesize(**kwargs: object) -> None:
+                Path(kwargs["output_path"]).write_bytes(b"wav")
+
+            with patch(
+                "omni_iot.tts_omnivoice.synthesize",
+                side_effect=fake_synthesize,
+            ) as synthesize:
+                run_tts("안녕하세요.", turn_dir, settings, num_steps=16)
+
+            self.assertEqual(synthesize.call_args.kwargs["num_steps"], 16)
 
     def test_second_turn_receives_first_turn_transcript_and_response(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -61,6 +82,7 @@ class PipelineMultiTurnTest(unittest.TestCase):
                 _input_path: Path,
                 _settings: Settings,
                 history: list[dict[str, str]] | None = None,
+                max_tokens: int | None = None,
             ) -> OmniResult:
                 histories.append(history or [])
                 return next(results)

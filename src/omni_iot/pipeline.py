@@ -31,6 +31,7 @@ class OmniServerClient(Protocol):
         self,
         audio_path: Path,
         history: list[dict[str, str]],
+        max_tokens: int | None = None,
     ) -> str: ...
 
 
@@ -39,6 +40,8 @@ def run_turn_pipeline(
     settings: Settings,
     session: ConversationSession | None = None,
     omni_client: OmniServerClient | None = None,
+    max_tokens: int | None = None,
+    tts_num_steps: int | None = None,
 ) -> TurnResult:
     turn_id = uuid.uuid4().hex
     turn_dir = settings.runtime_dir / turn_id
@@ -68,6 +71,7 @@ def run_turn_pipeline(
             settings,
             history=history,
             omni_client=omni_client,
+            max_tokens=max_tokens,
         )
     omni_elapsed = time.perf_counter() - omni_started_at
 
@@ -76,7 +80,12 @@ def run_turn_pipeline(
         session.add_assistant_message(omni_result.text)
 
     tts_started_at = time.perf_counter()
-    audio_path = run_tts(omni_result.text, turn_dir, settings)
+    audio_path = run_tts(
+        omni_result.text,
+        turn_dir,
+        settings,
+        num_steps=tts_num_steps,
+    )
     tts_elapsed = time.perf_counter() - tts_started_at
 
     return TurnResult(
@@ -98,8 +107,16 @@ def run_demo_pipeline(
     input_audio: bytes,
     settings: Settings,
     omni_client: OmniServerClient | None = None,
+    max_tokens: int | None = None,
+    tts_num_steps: int | None = None,
 ) -> TurnResult:
-    return run_turn_pipeline(input_audio, settings, omni_client=omni_client)
+    return run_turn_pipeline(
+        input_audio,
+        settings,
+        omni_client=omni_client,
+        max_tokens=max_tokens,
+        tts_num_steps=tts_num_steps,
+    )
 
 
 @dataclass(frozen=True)
@@ -114,11 +131,14 @@ def run_omni(
     settings: Settings,
     history: list[dict[str, str]] | None = None,
     omni_client: OmniServerClient | None = None,
+    max_tokens: int | None = None,
 ) -> OmniResult:
     if settings.omni_backend == "server":
         if omni_client is None:
             raise RuntimeError("llama-server client is not initialized.")
-        return _parse_omni_output(omni_client.generate(input_path, history or []))
+        return _parse_omni_output(
+            omni_client.generate(input_path, history or [], max_tokens=max_tokens)
+        )
 
     if not settings.omni_command:
         return OmniResult(
@@ -187,7 +207,12 @@ def _parse_omni_output(output: str) -> OmniResult:
     )
 
 
-def run_tts(text: str, turn_dir: Path, settings: Settings) -> Path | None:
+def run_tts(
+    text: str,
+    turn_dir: Path,
+    settings: Settings,
+    num_steps: int | None = None,
+) -> Path | None:
     if settings.tts_backend == "omnivoice":
         from .tts_omnivoice import synthesize
 
@@ -199,6 +224,9 @@ def run_tts(text: str, turn_dir: Path, settings: Settings) -> Path | None:
             instruct=settings.omnivoice_instruct,
             speed=settings.omnivoice_speed,
             model_id=settings.omnivoice_model_id,
+            num_steps=(
+                num_steps if num_steps is not None else settings.omnivoice_num_steps
+            ),
         )
         if not output_path.exists():
             raise RuntimeError("OmniVoice TTS completed but produced no WAV output.")

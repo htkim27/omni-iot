@@ -142,6 +142,7 @@ button:disabled {
 .settings-row {
   gap: 12px;
   color: #c6bdad;
+  margin-top: 16px;
 }
 
 .settings-block {
@@ -149,7 +150,7 @@ button:disabled {
 }
 
 .settings-row label {
-  min-width: 96px;
+  min-width: 118px;
   font-size: 14px;
 }
 
@@ -159,7 +160,7 @@ button:disabled {
 }
 
 .settings-help {
-  margin: 9px 72px 0 108px;
+  margin: 9px 72px 0 130px;
   color: #928a7f;
   font-size: 13px;
   line-height: 1.5;

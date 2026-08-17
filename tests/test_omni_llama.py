@@ -52,11 +52,12 @@ class OmniLlamaTest(unittest.TestCase):
             }
 
             with patch.object(server, "_request_json", return_value=response) as request:
-                result = json.loads(server.generate(audio_path, []))
+                result = json.loads(server.generate(audio_path, [], max_tokens=96))
 
             self.assertEqual(result, {"user_text": "안녕", "text": "반가워요."})
             payload = request.call_args.args[1]
             self.assertTrue(payload["cache_prompt"])
+            self.assertEqual(payload["max_tokens"], 96)
 
     def test_build_turn_prompt_includes_previous_conversation(self) -> None:
         prompt = _build_turn_prompt(

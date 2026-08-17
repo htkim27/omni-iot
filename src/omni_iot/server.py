@@ -40,6 +40,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     settings.omnivoice_language,
                     settings.omnivoice_instruct,
                     settings.omnivoice_speed,
+                    settings.omnivoice_num_steps,
                 )
         yield
     finally:
@@ -66,6 +67,8 @@ async def demo(request: Request) -> JSONResponse:
     audio = await request.body()
     if not audio:
         raise HTTPException(status_code=400, detail="No audio bytes received.")
+    max_tokens = _int_header(request, "x-response-token-limit", 16, 512)
+    tts_num_steps = _int_header(request, "x-tts-num-steps", 4, 64)
 
     try:
         result = await run_in_threadpool(
@@ -73,6 +76,8 @@ async def demo(request: Request) -> JSONResponse:
             audio,
             settings,
             omni_service,
+            max_tokens,
+            tts_num_steps,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -94,6 +99,8 @@ async def turn(
     audio_bytes = await request.body()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="No audio bytes received.")
+    max_tokens = _int_header(request, "x-response-token-limit", 16, 512)
+    tts_num_steps = _int_header(request, "x-tts-num-steps", 4, 64)
 
     session = conversations.get(x_session_id)
     try:
@@ -103,6 +110,8 @@ async def turn(
             settings,
             session,
             omni_service,
+            max_tokens,
+            tts_num_steps,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -138,6 +147,30 @@ def health() -> JSONResponse:
     )
 
 
+@app.get("/api/config")
+def client_config() -> JSONResponse:
+    """Return non-secret, browser-adjustable defaults and fixed VAD settings."""
+    return JSONResponse(
+        {
+            "vad": {
+                "threshold": settings.vad_threshold,
+                "silence_end_ms": settings.vad_silence_end_ms,
+                "pre_roll_ms": settings.vad_pre_roll_ms,
+                "max_turn_ms": settings.vad_max_turn_ms,
+                "barge_in_multiplier": settings.vad_barge_in_multiplier,
+                "continue_multiplier": settings.vad_continue_multiplier,
+            },
+            "generation": {
+                "max_response_tokens": settings.llama_n_predict,
+                "tts_num_steps": settings.omnivoice_num_steps,
+            },
+            "features": {
+                "sentence_tts_pipelining": False,
+            },
+        }
+    )
+
+
 @app.get("/api/audio/{turn_id}/{filename}")
 def audio(turn_id: str, filename: str) -> FileResponse:
     audio_path = settings.runtime_dir / turn_id / filename
@@ -166,6 +199,22 @@ def _turn_payload(result: TurnResult, audio_url: str | None) -> dict[str, object
         "used_tts": result.used_tts,
         "timings": result.timings,
     }
+
+
+def _int_header(request: Request, name: str, minimum: int, maximum: int) -> int | None:
+    value = request.headers.get(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {name} header.") from exc
+    if not minimum <= parsed <= maximum:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} must be between {minimum} and {maximum}.",
+        )
+    return parsed
 
 
 def main() -> None:

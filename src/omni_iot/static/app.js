@@ -8,10 +8,20 @@ const replyAudio = document.querySelector("#replyAudio");
 const turnList = document.querySelector("#turnList");
 const thresholdSlider = document.querySelector("#thresholdSlider");
 const thresholdValue = document.querySelector("#thresholdValue");
+const silenceSlider = document.querySelector("#silenceSlider");
+const silenceValue = document.querySelector("#silenceValue");
+const responseTokensSlider = document.querySelector("#responseTokensSlider");
+const responseTokensValue = document.querySelector("#responseTokensValue");
+const ttsStepsSlider = document.querySelector("#ttsStepsSlider");
+const ttsStepsValue = document.querySelector("#ttsStepsValue");
 
-const preRollSeconds = 0.45;
-const silenceEndMs = 850;
-const maxTurnMs = 14000;
+let preRollSeconds = 0.45;
+let silenceEndMs = Number(silenceSlider.value);
+let maxTurnMs = 14000;
+let bargeInMultiplier = 1.4;
+let continueMultiplier = 0.72;
+let responseTokenLimit = Number(responseTokensSlider.value);
+let ttsNumSteps = Number(ttsStepsSlider.value);
 
 let audioContext;
 let analyser;
@@ -39,7 +49,25 @@ resetButton.addEventListener("click", resetSession);
 thresholdSlider.addEventListener("input", () => {
   threshold = Number(thresholdSlider.value) / 100;
   thresholdValue.value = threshold.toFixed(2);
+  saveSetting("vad_threshold", thresholdSlider.value);
 });
+silenceSlider.addEventListener("input", () => {
+  silenceEndMs = Number(silenceSlider.value);
+  silenceValue.value = `${silenceEndMs}ms`;
+  saveSetting("vad_silence_end_ms", silenceSlider.value);
+});
+responseTokensSlider.addEventListener("input", () => {
+  responseTokenLimit = Number(responseTokensSlider.value);
+  responseTokensValue.value = `${responseTokenLimit} tokens`;
+  saveSetting("response_token_limit", responseTokensSlider.value);
+});
+ttsStepsSlider.addEventListener("input", () => {
+  ttsNumSteps = Number(ttsStepsSlider.value);
+  ttsStepsValue.value = `${ttsNumSteps} steps`;
+  saveSetting("tts_num_steps", ttsStepsSlider.value);
+});
+
+void initializeSettings();
 
 async function startHarness() {
   stream = await navigator.mediaDevices.getUserMedia({
@@ -101,7 +129,7 @@ function handleAudioFrame(event) {
   latestRms = rms(input);
   pushPreRoll(input);
 
-  if (state === "speaking" && latestRms >= threshold * 1.4) {
+  if (state === "speaking" && latestRms >= threshold * bargeInMultiplier) {
     stopAssistantAudio();
     beginSpeech(now);
   }
@@ -114,7 +142,7 @@ function handleAudioFrame(event) {
     turnChunks.push(input);
     turnLength += input.length;
 
-    if (latestRms >= threshold * 0.72) {
+    if (latestRms >= threshold * continueMultiplier) {
       lastVoiceAt = now;
     }
 
@@ -153,6 +181,8 @@ async function sendTurn(wavBlob) {
       method: "POST",
       headers: {
         "Content-Type": "audio/wav",
+        "X-Response-Token-Limit": String(responseTokenLimit),
+        "X-TTS-Num-Steps": String(ttsNumSteps),
         ...(sessionId ? { "X-Session-Id": sessionId } : {}),
       },
       body: wavBlob,
@@ -173,6 +203,61 @@ async function sendTurn(wavBlob) {
     addTurn("system", error.message);
     setState("listening", "Listening");
   }
+}
+
+async function initializeSettings() {
+  try {
+    const response = await fetch("/api/config");
+    if (!response.ok) {
+      throw new Error("Failed to load client config");
+    }
+    const config = await response.json();
+    preRollSeconds = Number(config.vad.pre_roll_ms) / 1000;
+    maxTurnMs = Number(config.vad.max_turn_ms);
+    bargeInMultiplier = Number(config.vad.barge_in_multiplier);
+    continueMultiplier = Number(config.vad.continue_multiplier);
+
+    setControl(
+      thresholdSlider,
+      "vad_threshold",
+      Math.round(Number(config.vad.threshold) * 100),
+    );
+    setControl(
+      silenceSlider,
+      "vad_silence_end_ms",
+      config.vad.silence_end_ms,
+    );
+    setControl(
+      responseTokensSlider,
+      "response_token_limit",
+      config.generation.max_response_tokens,
+    );
+    setControl(
+      ttsStepsSlider,
+      "tts_num_steps",
+      config.generation.tts_num_steps,
+    );
+  } catch (error) {
+    console.warn(error);
+  }
+
+  threshold = Number(thresholdSlider.value) / 100;
+  silenceEndMs = Number(silenceSlider.value);
+  responseTokenLimit = Number(responseTokensSlider.value);
+  ttsNumSteps = Number(ttsStepsSlider.value);
+  thresholdValue.value = threshold.toFixed(2);
+  silenceValue.value = `${silenceEndMs}ms`;
+  responseTokensValue.value = `${responseTokenLimit} tokens`;
+  ttsStepsValue.value = `${ttsNumSteps} steps`;
+}
+
+function setControl(control, key, serverDefault) {
+  const saved = localStorage.getItem(`omni_iot_${key}`);
+  control.value = saved ?? String(serverDefault);
+}
+
+function saveSetting(key, value) {
+  localStorage.setItem(`omni_iot_${key}`, String(value));
 }
 
 async function playReply(payload) {

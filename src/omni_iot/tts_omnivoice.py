@@ -21,8 +21,9 @@ def _generation_kwargs(
     language: str | None = "ko",
     instruct: str | None = None,
     speed: float | None = None,
-) -> dict[str, str | float]:
-    kwargs: dict[str, str | float] = {"text": text}
+    num_steps: int | None = None,
+) -> dict[str, str | float | int]:
+    kwargs: dict[str, str | float | int] = {"text": text}
     if language:
         kwargs["language"] = language
     if ref_audio:
@@ -33,6 +34,8 @@ def _generation_kwargs(
         kwargs["instruct"] = instruct
     if speed is not None:
         kwargs["speed"] = speed
+    if num_steps is not None:
+        kwargs["num_step"] = num_steps
     return kwargs
 
 
@@ -45,6 +48,7 @@ def synthesize(
     instruct: str | None = None,
     speed: float | None = None,
     model_id: str = "k2-fsa/OmniVoice",
+    num_steps: int | None = None,
 ) -> None:
     kwargs = _generation_kwargs(
         text=text,
@@ -53,6 +57,7 @@ def synthesize(
         language=language,
         instruct=instruct,
         speed=speed,
+        num_steps=num_steps,
     )
 
     # OmniVoice is shared by every turn in this process. Serialize generation so
@@ -80,6 +85,7 @@ def warmup_model(
     language: str | None = "ko",
     instruct: str | None = None,
     speed: float | None = None,
+    num_steps: int | None = None,
 ) -> None:
     with _generation_lock:
         model = load_model(model_id)
@@ -89,6 +95,7 @@ def warmup_model(
                 language=language,
                 instruct=instruct,
                 speed=speed,
+                num_steps=num_steps,
             )
         )
 

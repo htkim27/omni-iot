@@ -28,7 +28,7 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] `.env` 기반 런타임 설정 로딩
 - [x] 턴별 입력/출력을 `.runtime/<turn-id>/`에 저장
 - [x] UUID 형식의 runtime 턴 디렉터리를 최신 20개로 자동 정리
-- [ ] 자동화된 테스트 구성
+- [x] 핵심 pipeline 및 설정 전달 자동화 테스트 구성
 
 지원 Python 범위는 `>=3.11,<3.13`입니다. 제공되는 명령은 다음과 같습니다.
 
@@ -43,10 +43,11 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] 브라우저 마이크 권한 및 mono 입력 수집
 - [x] 입력을 16-bit PCM WAV로 인코딩
 - [x] RMS threshold 기반 VAD
-- [x] 450ms pre-roll buffer
-- [x] 850ms 무음 기준 발화 종료
-- [x] 최대 14초 턴 제한
+- [x] `.env` 기본값 기반 450ms pre-roll buffer
+- [x] UI에서 조절 가능한 무음 기준 발화 종료(기본 600ms)
+- [x] `.env` 기본값 기반 최대 14초 턴 제한
 - [x] threshold UI 및 음량 meter
+- [x] 응답 토큰 상한과 TTS 생성 단계 UI
 - [x] 응답 WAV 자동 재생
 - [x] TTS WAV가 없을 때 브라우저 Speech Synthesis fallback
 - [x] 응답 재생 중 사용자 발화 감지 시 barge-in
@@ -57,6 +58,8 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 
 현재 VAD는 브라우저의 RMS 크기만 사용하는 프로토타입입니다. 서버 측 음성 모델이나 WebRTC VAD는 아직 사용하지 않습니다.
 
+UI에서 threshold, 발화 종료 대기, 응답 토큰 상한, TTS 생성 단계를 즉시 조절할 수 있으며 브라우저별 `localStorage`에 저장합니다. `.env`는 UI 최초 기본값과 pre-roll, 최대 턴, threshold 배수처럼 서버 시작 시 읽는 장비별 설정을 관리합니다.
+
 ### 2.3 대화 세션과 API
 
 - [x] 세션 ID 발급 및 브라우저 `localStorage` 보관
@@ -64,13 +67,14 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] 사용자 음성 턴과 assistant 텍스트 기록
 - [x] 세션 reset API
 - [x] OMNI/TTS 설정 상태 health API
+- [x] 비밀값을 제외한 UI 기본 설정 API
 - [x] 생성된 WAV 전달 API와 runtime 경로 검증
-- [ ] 실제 대화 history를 다음 OMNI 프롬프트에 반영
+- [x] 실제 대화 history를 다음 OMNI 프롬프트에 반영
 - [ ] 세션 만료 및 메모리 정리
 - [ ] 동시 요청과 여러 사용자에 대한 안전성 보강
 - [ ] 입력 WAV 형식과 크기 validation
 
-현재 conversation store는 프로세스 메모리에만 존재합니다. 서버 재시작 시 기록이 사라지며, transcript는 UI 표시용 상태일 뿐 OMNI 추론 context에는 아직 전달되지 않습니다.
+현재 conversation store는 프로세스 메모리에만 존재해 서버 재시작 시 기록이 사라집니다. 같은 세션의 최근 사용자 transcript와 assistant 응답은 다음 OMNI 추론 context에 전달됩니다.
 
 `.runtime` 정리는 서버 시작 및 새 턴 생성 시 실행됩니다. 기본 보존 개수는 `RUNTIME_TURN_LIMIT=20`이며, 자동 생성된 32자리 UUID 디렉터리만 대상으로 하므로 smoke test WAV나 사용자가 만든 다른 경로는 삭제하지 않습니다.
 
@@ -79,6 +83,7 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 | Method | 경로 | 역할 |
 | --- | --- | --- |
 | `GET` | `/api/health` | OMNI/TTS 설정 여부 확인 |
+| `GET` | `/api/config` | UI용 VAD/생성 기본값 확인 |
 | `POST` | `/api/turn` | 세션 기반 WAV 턴 처리 |
 | `POST` | `/api/demo` | 세션 없는 단일 WAV 처리 |
 | `POST` | `/api/session/reset` | 세션 기록 초기화 |
@@ -117,6 +122,10 @@ LLAMA_OP_OFFLOAD=true
 LLAMA_MMPROJ_OFFLOAD=true
 LLAMA_CTX_SIZE=4096
 LLAMA_N_PREDICT=192
+LLAMA_TEMPERATURE=0.2
+LLAMA_PARALLEL=1
+LLAMA_THREADS=8
+LLAMA_CACHE_PROMPT=true
 LLAMA_FLASH_ATTN=off
 LLAMA_WARMUP=false
 ```
@@ -155,6 +164,7 @@ cmake --build vendor/llama.cpp/build-cuda131-sm120-gcc13 \
 - [x] `/api/turn`의 `audio_url` 응답 검증
 - [x] 서버 프로세스에서 모델을 사전 로드하고 턴 사이에 재사용
 - [ ] 긴 응답의 chunk/streaming 합성
+- [x] UI에서 턴별 생성 단계 조절
 - [ ] TTS latency 및 VRAM 사용량 측정
 - [x] OMNI 20-layer offload와 TTS 동시 상주 정책 확정
 
@@ -166,6 +176,7 @@ OMNIVOICE_MODEL_ID=k2-fsa/OmniVoice
 OMNIVOICE_LANGUAGE=ko
 OMNIVOICE_INSTRUCT=male, korean accent, moderate pitch, young adult
 OMNIVOICE_SPEED=
+OMNIVOICE_NUM_STEPS=32
 TTS_TIMEOUT_SECONDS=180
 ```
 
@@ -232,7 +243,7 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 - [ ] 다음 발화 반복
 - [ ] 응답 도중 barge-in 반복
 
-자동화된 테스트가 아직 없으므로 현재 완료 표시는 로컬 smoke test 기준입니다.
+pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하며, 실제 음질과 브라우저 마이크 동작은 로컬 smoke test로 검증합니다.
 
 ## 5. 단계별 로드맵
 
@@ -271,6 +282,7 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 - [x] OMNI 응답을 TTS로 전달
 - [x] OMNI 및 TTS 모델 상시 로딩
 - [ ] chunk 또는 streaming TTS
+- [x] 응답 길이와 TTS 생성 단계의 턴별 조절
 - [x] warm 반복 요청 latency 기준선 측정
 
 ### Phase 4 — MCP 클라이언트
