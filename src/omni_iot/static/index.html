@@ -28,10 +28,23 @@
           <span id="meterBar"></span>
         </div>
 
-        <div class="settings-row">
-          <label for="thresholdSlider">Threshold</label>
-          <input id="thresholdSlider" type="range" min="1" max="12" value="4" />
-          <output id="thresholdValue" for="thresholdSlider">0.04</output>
+        <div class="settings-block">
+          <div class="settings-row">
+            <label for="thresholdSlider">음성 감지 기준</label>
+            <input
+              id="thresholdSlider"
+              type="range"
+              min="1"
+              max="12"
+              value="4"
+              aria-describedby="thresholdHelp"
+            />
+            <output id="thresholdValue" for="thresholdSlider" aria-label="현재 기준값">0.04</output>
+          </div>
+          <p id="thresholdHelp" class="settings-help">
+            마이크 음량이 이 값 이상이면 발화로 인식합니다. 낮을수록 작은 소리에도 민감하며,
+            주변 소음에 자주 반응하면 값을 높이세요.
+          </p>
         </div>
 
         <audio id="replyAudio"></audio>

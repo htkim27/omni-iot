@@ -141,14 +141,28 @@ button:disabled {
 
 .settings-row {
   gap: 12px;
-  margin: 18px 0 22px;
   color: #c6bdad;
 }
 
-.settings-row label,
+.settings-block {
+  margin: 18px 0 22px;
+}
+
+.settings-row label {
+  min-width: 96px;
+  font-size: 14px;
+}
+
 .settings-row output {
   min-width: 72px;
   font-size: 14px;
+}
+
+.settings-help {
+  margin: 9px 72px 0 108px;
+  color: #928a7f;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 input[type="range"] {
@@ -222,5 +236,23 @@ audio {
   .turn {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .settings-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .settings-row label {
+    width: 100%;
+  }
+
+  .settings-row input {
+    flex: 1;
+  }
+
+  .settings-help {
+    margin-right: 0;
+    margin-left: 0;
   }
 }
