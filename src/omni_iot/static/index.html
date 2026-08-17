@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>omni-iot voice harness</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <header class="topbar">
+          <div class="brand">
+            <span id="stateDot" class="dot idle"></span>
+            <span id="stateText">Idle</span>
+          </div>
+          <button id="resetButton" class="icon-button" type="button" title="Reset session">Reset</button>
+        </header>
+
+        <h1>omni-iot</h1>
+
+        <div class="controls">
+          <button id="startButton" class="primary" type="button">Start</button>
+          <button id="stopButton" type="button" disabled>Stop</button>
+        </div>
+
+        <div class="meter" aria-hidden="true">
+          <span id="meterBar"></span>
+        </div>
+
+        <div class="settings-row">
+          <label for="thresholdSlider">Threshold</label>
+          <input id="thresholdSlider" type="range" min="1" max="12" value="4" />
+          <output id="thresholdValue" for="thresholdSlider">0.04</output>
+        </div>
+
+        <audio id="replyAudio"></audio>
+
+        <section class="conversation" aria-live="polite">
+          <ol id="turnList"></ol>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
