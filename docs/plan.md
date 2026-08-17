@@ -94,8 +94,8 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 - [x] 텍스트 출력 정리 및 오류 전달
 - [x] 실제 WAV → Qwen3-Omni → 텍스트 응답 검증
 - [x] CPU 모드의 안정 동작 확인
-- [ ] RTX 5070 Ti CUDA offload 오류 해결
-- [ ] GPU layer 수에 따른 VRAM/latency 측정
+- [x] CUDA 13.1/Blackwell 전용 build로 RTX 5070 Ti offload 오류 해결
+- [x] GPU layer 수에 따른 VRAM/latency 측정
 - [x] 관리형 `llama-server` 상시 로딩 및 server mode 전환
 - [ ] 스트리밍 응답 검토
 
@@ -104,36 +104,43 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 ```text
 models/Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf
 models/mmproj-Qwen3-Omni-30B-A3B-Instruct-Q8_0.gguf
-vendor/llama.cpp/build-cuda124-sm89/bin/llama-cli
+vendor/llama.cpp/build-cuda131-sm120-gcc13/bin/llama-cli
 ```
 
 현재 안정 기준 설정:
 
 ```dotenv
 OMNI_COMMAND=uv run omni-iot-omni --audio {audio}
-LLAMA_N_GPU_LAYERS=0
-LLAMA_DEVICE=none
-LLAMA_OP_OFFLOAD=false
-LLAMA_MMPROJ_OFFLOAD=false
+LLAMA_N_GPU_LAYERS=20
+LLAMA_DEVICE=
+LLAMA_OP_OFFLOAD=true
+LLAMA_MMPROJ_OFFLOAD=true
 LLAMA_CTX_SIZE=4096
 LLAMA_N_PREDICT=192
 LLAMA_FLASH_ATTN=off
 LLAMA_WARMUP=false
 ```
 
-CPU 기준선에서는 전체 파이프라인이 동작합니다. RTX 5070 Ti에서 Qwen3-Omni를 CUDA로 오프로딩하면 현재 `SOFT_MAX failed / invalid argument` 오류가 발생합니다. GPU 문제가 해결되기 전에는 `LLAMA_N_GPU_LAYERS=0`을 유지합니다.
+기존 오류는 CUDA 12.4에서 Ada용 `sm_89`로 빌드한 바이너리를 Blackwell `sm_120` 장비에서 사용한 것이 원인이었습니다. CUDA Toolkit 13.1과 GCC 13으로 `sm_120a` 전용 빌드를 생성한 뒤 `SOFT_MAX failed / invalid argument`가 재현되지 않았습니다. 운영 기본값은 OMNI 20개 layer와 mmproj를 GPU에 올리며, OmniVoice를 동시에 실행한 실제 요청에서 약 13.0GB VRAM과 3.84초 end-to-end latency를 확인했습니다.
 
 현재 wrapper가 기본으로 참조하는 build 구성:
 
 ```bash
 cmake -S vendor/llama.cpp \
-  -B vendor/llama.cpp/build-cuda124-sm89 \
+  -B vendor/llama.cpp/build-cuda131-sm120-gcc13 \
   -DGGML_CUDA=ON \
-  -DCMAKE_CUDA_ARCHITECTURES="89" \
+  -DGGML_NATIVE=OFF \
+  -DGGML_CUDA_NCCL=OFF \
+  -DCMAKE_C_COMPILER=/usr/bin/gcc-13 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 \
+  -DCUDAToolkit_ROOT=/usr/local/cuda \
+  -DCMAKE_CUDA_ARCHITECTURES=120a \
   -DCMAKE_BUILD_TYPE=Release
 
-cmake --build vendor/llama.cpp/build-cuda124-sm89 \
-  --config Release -j "$(nproc)"
+cmake --build vendor/llama.cpp/build-cuda131-sm120-gcc13 \
+  --config Release --target llama-server llama-cli -j 8
 ```
 
 ### 2.5 OmniVoice TTS
@@ -149,7 +156,7 @@ cmake --build vendor/llama.cpp/build-cuda124-sm89 \
 - [x] 서버 프로세스에서 모델을 사전 로드하고 턴 사이에 재사용
 - [ ] 긴 응답의 chunk/streaming 합성
 - [ ] TTS latency 및 VRAM 사용량 측정
-- [ ] OMNI와 TTS의 GPU 메모리 전환 정책 확정
+- [x] OMNI 20-layer offload와 TTS 동시 상주 정책 확정
 
 기본 설정:
 
@@ -239,12 +246,12 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 
 ### Phase 1 — 로컬 OMNI 추론
 
-상태: CPU 기준 완료, GPU 최적화 진행 중
+상태: GPU partial offload 기준 완료, 추가 최적화 진행 중
 
 - [x] llama.cpp wrapper와 로컬 모델 연결
 - [x] 음성 입력 → 텍스트 응답 검증
-- [ ] RTX 5070 Ti offload 안정화
-- [ ] latency와 VRAM benchmark
+- [x] RTX 5070 Ti offload 안정화
+- [x] latency와 VRAM benchmark
 
 ### Phase 2 — 실시간 음성 루프
 

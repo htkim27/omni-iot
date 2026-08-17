@@ -17,7 +17,7 @@
 - 사용자 발화 transcript와 최근 대화 history를 다음 OMNI 턴에 전달하는 멀티턴 구현
 - `llama-server`와 OmniVoice 모델을 서버 수명 동안 유지해 턴별 모델 재로딩 제거
 - 파일 단위의 실제 `OMNI → TTS` 전체 파이프라인 검증 완료
-- RTX 5070 Ti GPU 오프로딩 안정화 및 브라우저 전체 반복 루프 검증 진행 중
+- CUDA 13.1/Blackwell 빌드에서 RTX 5070 Ti partial GPU 오프로딩 검증 완료
 - MCP 기반 IoT 제어와 방별 입출력 장치 연동은 이후 단계
 
 구현 단위의 상태, 알려진 문제와 다음 작업은 [docs/plan.md](docs/plan.md)를 참고하세요.
@@ -60,7 +60,29 @@ uv run omni-iot --host 127.0.0.1 --port 8000
 
 브라우저에서 <http://127.0.0.1:8000>을 열고 `Start`를 눌러 마이크 권한을 허용합니다.
 
-`.env.example`은 현재 검증된 CPU 기반 `llama-server`와 OmniVoice 설정을 포함합니다. 모델 없이 브라우저 음성 흐름만 시험하려면 `OMNI_BACKEND=command`로 바꾸고 `OMNI_COMMAND`를 비워 mock 응답을 사용할 수 있습니다.
+`.env.example`은 RTX 5070 Ti에서 검증한 CUDA 13.1 기반 `llama-server` 20-layer offload와 OmniVoice 설정을 포함합니다. 해당 장비에서는 OMNI와 TTS를 동시에 실행해 약 13.0GB VRAM, warm end-to-end 3.84초를 확인했습니다. 모델 없이 브라우저 음성 흐름만 시험하려면 `OMNI_BACKEND=command`로 바꾸고 `OMNI_COMMAND`를 비워 mock 응답을 사용할 수 있습니다.
+
+### RTX 5070 Ti용 llama.cpp 빌드
+
+CUDA Toolkit 13.1과 GCC 13을 사용해 Blackwell `sm_120a` 전용 바이너리를 생성합니다.
+
+```bash
+cmake -S vendor/llama.cpp \
+  -B vendor/llama.cpp/build-cuda131-sm120-gcc13 \
+  -DGGML_CUDA=ON \
+  -DGGML_NATIVE=OFF \
+  -DGGML_CUDA_NCCL=OFF \
+  -DCMAKE_C_COMPILER=/usr/bin/gcc-13 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 \
+  -DCUDAToolkit_ROOT=/usr/local/cuda \
+  -DCMAKE_CUDA_ARCHITECTURES=120a \
+  -DCMAKE_BUILD_TYPE=Release
+
+cmake --build vendor/llama.cpp/build-cuda131-sm120-gcc13 \
+  --config Release --target llama-server llama-cli -j 8
+```
 
 ## 주요 명령
 

@@ -56,7 +56,7 @@ class Settings:
         PROJECT_ROOT
         / "vendor"
         / "llama.cpp"
-        / "build-cuda124-sm89"
+        / "build-cuda131-sm120-gcc13"
         / "bin"
         / "llama-server",
     )
@@ -71,13 +71,13 @@ class Settings:
     llama_server_host: str = os.getenv("LLAMA_SERVER_HOST", "127.0.0.1")
     llama_server_port: int = _int_env("LLAMA_SERVER_PORT", 8081)
     llama_server_startup_seconds: int = _int_env("LLAMA_SERVER_STARTUP_SECONDS", 90)
-    llama_gpu_layers: str = os.getenv("LLAMA_N_GPU_LAYERS", "0")
+    llama_gpu_layers: str = os.getenv("LLAMA_N_GPU_LAYERS", "20")
     llama_device: str | None = os.getenv("LLAMA_DEVICE") or None
-    llama_op_offload: bool = os.getenv("LLAMA_OP_OFFLOAD", "false").lower() in {
+    llama_op_offload: bool = os.getenv("LLAMA_OP_OFFLOAD", "true").lower() in {
         "1", "true", "yes", "on",
     }
     llama_mmproj_offload: bool = os.getenv(
-        "LLAMA_MMPROJ_OFFLOAD", "false"
+        "LLAMA_MMPROJ_OFFLOAD", "true"
     ).lower() in {"1", "true", "yes", "on"}
     llama_ctx_size: int = _int_env("LLAMA_CTX_SIZE", 4096)
     llama_n_predict: int = _int_env("LLAMA_N_PREDICT", 192)

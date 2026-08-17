@@ -17,7 +17,14 @@ if TYPE_CHECKING:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LLAMA_CLI = PROJECT_ROOT / "vendor" / "llama.cpp" / "build-cuda124-sm89" / "bin" / "llama-cli"
+DEFAULT_LLAMA_CLI = (
+    PROJECT_ROOT
+    / "vendor"
+    / "llama.cpp"
+    / "build-cuda131-sm120-gcc13"
+    / "bin"
+    / "llama-cli"
+)
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf"
 DEFAULT_MMPROJ = PROJECT_ROOT / "models" / "mmproj-Qwen3-Omni-30B-A3B-Instruct-Q8_0.gguf"
 DEFAULT_SYSTEM = (
