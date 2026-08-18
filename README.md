@@ -2,7 +2,7 @@
 
 로컬 환경에서 동작하는 Jarvis 스타일의 실시간 음성 IoT 어시스턴트 프로젝트입니다.
 
-브라우저 또는 방별 음성 장치에서 사용자의 말을 받고, speech-aware OMNI 모델이 음성을 직접 이해해 응답을 만든 뒤 TTS로 재생하는 구조를 목표로 합니다. 대화 기반이 안정화되면 MCP를 통해 스마트홈과 IoT 도구를 연결합니다.
+브라우저 또는 방별 음성 장치에서 사용자의 말을 받고, speech-aware OMNI 모델이 음성을 직접 이해해 MCP 스마트홈 도구를 호출한 뒤 TTS로 응답하는 구조입니다.
 
 > 핵심 파이프라인은 일반적인 `STT → LLM → TTS`가 아니라 `Audio → OMNI → Text → TTS`입니다.
 
@@ -18,9 +18,11 @@
 - VAD 종료 시간, 응답 길이, TTS 생성 단계를 실행 중 UI에서 조절 가능
 - 사용자 발화 transcript와 최근 대화 history를 다음 OMNI 턴에 전달하는 멀티턴 구현
 - `llama-server`와 OmniVoice 모델을 서버 수명 동안 유지해 턴별 모델 재로딩 제거
+- 공식 MCP Python SDK 기반 stdio/Streamable HTTP 클라이언트와 Qwen tool loop 구현
+- allowlist 기반 도구 노출, 로컬 설정 CLI, health/doctor 진단 구현
 - 파일 단위의 실제 `OMNI → TTS` 전체 파이프라인 검증 완료
 - CUDA 13.1/Blackwell 빌드에서 RTX 5070 Ti partial GPU 오프로딩 검증 완료
-- MCP 기반 IoT 제어와 방별 입출력 장치 연동은 이후 단계
+- 실제 SwitchBot 계정/장치 acceptance와 방별 입출력 장치 연동은 장비 환경에서 진행
 
 구현 단위의 상태, 알려진 문제와 다음 작업은 [docs/plan.md](docs/plan.md)를, 장기 설계 원칙은 [ADR 0001](docs/adr/0001-design-philosophy.md)을 참고하세요.
 
@@ -30,9 +32,9 @@
 마이크 / 방별 입력 장치
   → openWakeWord `Hey Jarvis` 감지 (sleep → wake)
   → VAD 및 발화 구간 감지
-  → Qwen3-Omni (llama.cpp)
-  → 텍스트 응답 및 대화 상태
-  → MCP 도구 호출 (예정)
+  → Qwen3-Omni (llama.cpp `--jinja`, OpenAI tools)
+  → allowlist된 MCP 도구 호출 (stdio / Streamable HTTP)
+  → 최종 텍스트 응답 및 대화 상태
   → OmniVoice TTS
   → 브라우저 / 방별 스피커
 ```
@@ -79,6 +81,43 @@ uv run omni-iot --host 127.0.0.1 --port 8000
 `.env.example`은 RTX 5070 Ti에서 검증한 CUDA 13.1 기반 `llama-server` 20-layer offload와 OmniVoice 설정을 포함합니다. 해당 장비에서는 OMNI와 TTS를 동시에 실행해 약 13.0GB VRAM, warm end-to-end 3.84초를 확인했습니다. 모델 없이 브라우저 음성 흐름만 시험하려면 `OMNI_BACKEND=command`로 바꾸고 `OMNI_COMMAND`를 비워 mock 응답을 사용할 수 있습니다.
 
 `.env`는 API 키 전용 파일이 아니라 장비·실행 환경별 설정과 비밀값을 함께 두는 파일입니다. 현재는 모델 경로, GPU/서버 설정, 호출어, VAD 기본값과 생성 옵션을 관리합니다. 각 값의 의미·단위·조절 효과는 [.env.example](.env.example)에 한글 주석으로 설명했습니다. 실제 비밀값은 커밋하지 않는 `.env`에만 넣습니다.
+
+## MCP와 SwitchBot 연결
+
+MCP 서버 등록 정보는 git에서 제외되는 `.mcp.json`에 둡니다. [.mcp.example.json](.mcp.example.json)을 복사하거나 `omni-iot-mcp` CLI로 관리할 수 있습니다. `command` 서버는 shell 없이 stdio argv로 실행되고, `url` 서버는 Streamable HTTP로 연결됩니다. 모델과 직접 호출 양쪽 모두 `allowedTools`의 exact allowlist를 통과해야 하며 `*`는 서버의 모든 도구를 명시적으로 허용합니다. 설정 변경은 원자적으로 저장되지만 hot reload하지 않으므로 앱을 재시작해야 합니다.
+
+SwitchBot 연결에는 Node.js 18 이상과 공식 CLI가 필요합니다. API 인증 정보와 실제 MCP 등록 파일은 각각 git에서 제외되는 `.env`와 `.mcp.json`에만 저장합니다.
+
+```bash
+npm install --global @switchbot/openapi-cli@latest
+switchbot auth login
+switchbot doctor --json
+
+uv run omni-iot-mcp add-stdio switchbot \
+  --command "$(command -v switchbot)" \
+  --arg mcp --arg serve \
+  --allow-tool list_devices \
+  --allow-tool get_device_status \
+  --allow-tool send_command \
+  --allow-tool list_scenes \
+  --allow-tool run_scene
+
+uv run omni-iot-mcp doctor --json
+uv run omni-iot
+```
+
+`switchbot mcp serve`가 적용하는 확인·reviewed-plan·catalog 정책은 하네스에서 우회하지 않습니다. 연결 후 `/api/health`의 `mcp.servers`에서 transport, 상태와 노출 도구 수를 확인할 수 있습니다. 음성 smoke test는 장치 목록 → 특정 장치 상태 → 사용자가 선정한 비위험 장치의 `turnOn`/`turnOff` → 존재하지 않는 장치 오류 순서로 수행합니다. 도구 호출 중간 메시지는 대화 history에 남기지 않고 `.runtime/<turn-id>/tool-trace.json`에 서버·도구·시간·성공 여부만 기록합니다.
+
+그 밖의 관리 명령은 다음과 같습니다.
+
+```bash
+uv run omni-iot-mcp list
+uv run omni-iot-mcp allow switchbot get_device_status
+uv run omni-iot-mcp disallow switchbot run_scene
+uv run omni-iot-mcp disable switchbot
+uv run omni-iot-mcp enable switchbot
+uv run omni-iot-mcp remove switchbot
+```
 
 Threshold, 발화 종료 대기, 응답 토큰 상한, TTS 단계는 UI에서 즉시 변경할 수 있으며 브라우저별 `localStorage`에 저장됩니다. 이 저장값은 이후 접속에서도 `.env` 기본값보다 우선합니다. 긴 문장이 중간에 잘리면 UI의 발화 종료 대기를 1200~1500ms로 늘리고, 14초 제한 자체를 늘리려면 `VAD_MAX_TURN_MS`를 수정한 뒤 서버를 재시작합니다.
 
@@ -137,6 +176,10 @@ uv run omni-iot-tts \
 ├── src/omni_iot/
 │   ├── config.py                # 환경 설정
 │   ├── conversation.py          # 대화 세션
+│   ├── mcp_config.py            # 로컬 MCP 설정과 비밀값 치환
+│   ├── mcp_client.py            # MCP 연결, catalog와 tool 실행
+│   ├── mcp_cli.py               # MCP 등록·진단 CLI
+│   ├── omni_agent.py            # Qwen ↔ MCP tool loop
 │   ├── omni_llama.py            # llama.cpp OMNI wrapper
 │   ├── pipeline.py              # OMNI → TTS 파이프라인
 │   ├── server.py                # FastAPI 서버
@@ -152,11 +195,11 @@ uv run omni-iot-tts \
 
 1. 로컬 OMNI → TTS 대화 루프 안정화
 2. GPU 오프로딩과 응답 지연 최적화
-3. MCP 클라이언트 및 IoT 도구 연동
+3. 실제 SwitchBot 계정/장치 acceptance
 4. Android 등 always-on 음성 장치 연결
 5. 방별 입력 감지와 스피커 출력 라우팅
 
-현재 개발 범위는 1단계와 2단계입니다.
+현재 개발 범위는 1~3단계입니다.
 
 ## 테스트
 
@@ -167,4 +210,4 @@ TTS_BACKEND=command OMNI_BACKEND=command \
   uv run python -m unittest discover -s tests -v
 ```
 
-WebSocket 상태 전이, 호출어 프레임 처리, 대화 history, OMNI 응답 파싱, runtime 정리를 포함합니다. 실제 마이크 음질, 호출어 민감도와 GPU peak VRAM은 목표 장비에서 별도 smoke test가 필요합니다.
+WebSocket 상태 전이, 호출어 프레임 처리, 대화 history, MCP 설정/allowlist/agent loop, OMNI 응답 파싱, runtime 정리를 포함합니다. 실제 Qwen 음성 tool selection, SwitchBot 장치 변화, 마이크 음질과 GPU peak VRAM은 목표 장비에서 별도 smoke test가 필요합니다.
