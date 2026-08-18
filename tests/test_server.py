@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch
+from dataclasses import replace
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from omni_iot.pipeline import TurnResult
-from omni_iot.server import _int_header, app, client_config
+from omni_iot.server import _int_header, app, client_config, settings as server_settings
 from omni_iot.wakeword import WakeDetection
 
 
@@ -76,7 +77,19 @@ class AudioWebSocketTest(unittest.TestCase):
 
         with (
             patch("omni_iot.server.wakeword_detector_factory", FakeDetector),
-            patch("omni_iot.server.run_turn_pipeline", return_value=result),
+            patch("omni_iot.server.omni_service", None),
+            patch(
+                "omni_iot.server.settings",
+                replace(
+                    server_settings,
+                    omni_backend="command",
+                    tts_backend="command",
+                ),
+            ),
+            patch(
+                "omni_iot.server.run_turn_pipeline",
+                new=AsyncMock(return_value=result),
+            ),
             TestClient(app) as client,
             client.websocket_connect("/ws/audio") as websocket,
         ):

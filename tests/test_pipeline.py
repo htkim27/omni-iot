@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Callable
 from unittest.mock import patch
 
 from omni_iot.config import Settings
 from omni_iot.conversation import ConversationSession
+from omni_iot.omni_agent import AgentGeneration
 from omni_iot.pipeline import (
     OmniResult,
     _parse_omni_output,
@@ -29,7 +32,64 @@ def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
     )
 
 
+async def _direct_to_thread(function: Callable[..., Any], *args: object, **kwargs: object) -> Any:
+    return function(*args, **kwargs)
+
+
 class PipelineMultiTurnTest(unittest.TestCase):
+    def test_server_turn_persists_only_minimal_tool_trace_and_final_history(self) -> None:
+        class FakeAgent:
+            async def generate(self, *_args: object, **_kwargs: object) -> AgentGeneration:
+                return AgentGeneration(
+                    output=json.dumps(
+                        {"user_text": "불 켜줘", "text": "불을 켰습니다."},
+                        ensure_ascii=False,
+                    ),
+                    tool_trace=(
+                        {
+                            "server": "switchbot",
+                            "tool": "send_command",
+                            "seconds": 0.1,
+                            "ok": True,
+                        },
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_dir = Path(temp_dir)
+            settings = Settings(
+                project_root=runtime_dir,
+                runtime_dir=runtime_dir,
+                omni_backend="server",
+                tts_backend="command",
+                tts_command=None,
+            )
+            session = ConversationSession(id="session")
+            with patch(
+                "omni_iot.pipeline.asyncio.to_thread",
+                side_effect=_direct_to_thread,
+            ):
+                result = asyncio.run(
+                    run_turn_pipeline(
+                        b"wav",
+                        settings,
+                        session=session,
+                        omni_client=FakeAgent(),
+                    )
+                )
+
+            trace = json.loads(
+                (runtime_dir / result.turn_id / "tool-trace.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(trace["calls"][0]["tool"], "send_command")
+            self.assertNotIn("result", trace["calls"][0])
+            self.assertEqual(
+                [(message.role, message.content) for message in session.messages],
+                [("user", "불 켜줘"), ("assistant", "불을 켰습니다.")],
+            )
+
     def test_external_backend_transcript_placeholder_is_discarded(self) -> None:
         result = _parse_omni_output(
             '{"user_text":"사용자가 실제로 말한 내용","text":"괜찮아요."}'
@@ -104,9 +164,15 @@ class PipelineMultiTurnTest(unittest.TestCase):
             with (
                 patch("omni_iot.pipeline.run_omni", side_effect=fake_omni),
                 patch("omni_iot.pipeline.run_tts", return_value=None),
+                patch(
+                    "omni_iot.pipeline.asyncio.to_thread",
+                    side_effect=_direct_to_thread,
+                ),
             ):
-                run_turn_pipeline(b"first", settings, session=session)
-                second = run_turn_pipeline(b"second", settings, session=session)
+                asyncio.run(run_turn_pipeline(b"first", settings, session=session))
+                second = asyncio.run(
+                    run_turn_pipeline(b"second", settings, session=session)
+                )
 
             self.assertEqual(histories[0], [])
             self.assertEqual(
