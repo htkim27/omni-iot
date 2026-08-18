@@ -20,16 +20,25 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.concurrency import run_in_threadpool
 
 from .config import get_settings
 from .conversation import ConversationSession, ConversationStore
+from .mcp_client import McpManager
+from .omni_agent import OmniAgent
 from .omni_llama import LlamaServer
 from .pipeline import TurnResult, run_demo_pipeline, run_turn_pipeline
 from .wakeword import SAMPLE_RATE, WakeWordDetector
 
 settings = get_settings()
 omni_service = LlamaServer(settings) if settings.omni_backend == "server" else None
+mcp_service = McpManager(
+    settings.mcp_config,
+    catalog_max_chars=settings.mcp_tool_catalog_max_chars,
+    result_max_chars=settings.mcp_tool_result_max_chars,
+)
+omni_agent = (
+    OmniAgent(omni_service, mcp_service, settings) if omni_service is not None else None
+)
 
 
 @asynccontextmanager
@@ -38,6 +47,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         if omni_service:
             await asyncio.to_thread(omni_service.start)
+        await mcp_service.start()
         if settings.tts_backend == "omnivoice":
             from .tts_omnivoice import load_model, warmup_model
 
@@ -54,6 +64,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 )
         yield
     finally:
+        await mcp_service.stop()
         if tts_loaded:
             from .tts_omnivoice import clear_model_cache
 
@@ -82,11 +93,10 @@ async def demo(request: Request) -> JSONResponse:
     tts_num_steps = _int_header(request, "x-tts-num-steps", 4, 64)
 
     try:
-        result = await run_in_threadpool(
-            run_demo_pipeline,
+        result = await run_demo_pipeline(
             audio,
             settings,
-            omni_service,
+            omni_agent,
             max_tokens,
             tts_num_steps,
         )
@@ -115,12 +125,11 @@ async def turn(
 
     session = conversations.get(x_session_id)
     try:
-        result = await run_in_threadpool(
-            run_turn_pipeline,
+        result = await run_turn_pipeline(
             audio_bytes,
             settings,
             session,
-            omni_service,
+            omni_agent,
             max_tokens,
             tts_num_steps,
         )
@@ -309,12 +318,11 @@ async def _finish_websocket_turn(
 ) -> str:
     await websocket.send_json({"type": "state", "state": "processing"})
     try:
-        result = await run_in_threadpool(
-            run_turn_pipeline,
+        result = await run_turn_pipeline(
             _pcm_to_wav(bytes(pcm)),
             settings,
             session,
-            omni_service,
+            omni_agent,
             max_tokens,
             tts_num_steps,
         )
@@ -381,6 +389,7 @@ def health() -> JSONResponse:
             ),
             "tts_backend": settings.tts_backend,
             "tts_configured": settings.tts_backend == "omnivoice" or bool(settings.tts_command),
+            "mcp": mcp_service.health(),
         }
     )
 

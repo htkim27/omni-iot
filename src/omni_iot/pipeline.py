@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 import subprocess
@@ -12,6 +13,7 @@ from typing import Protocol
 
 from .conversation import ConversationSession, normalize_user_transcript
 from .config import Settings
+from .omni_agent import AgentGeneration
 from .runtime import prune_runtime_turns
 
 
@@ -27,15 +29,15 @@ class TurnResult:
 
 
 class OmniServerClient(Protocol):
-    def generate(
+    async def generate(
         self,
         audio_path: Path,
         history: list[dict[str, str]],
         max_tokens: int | None = None,
-    ) -> str: ...
+    ) -> AgentGeneration: ...
 
 
-def run_turn_pipeline(
+async def run_turn_pipeline(
     input_audio: bytes,
     settings: Settings,
     session: ConversationSession | None = None,
@@ -63,14 +65,30 @@ def run_turn_pipeline(
     )
 
     omni_started_at = time.perf_counter()
-    if omni_client is None:
-        omni_result = run_omni(input_path, settings, history=history)
+    if settings.omni_backend == "server":
+        if omni_client is None:
+            raise RuntimeError("llama-server client is not initialized.")
+        generation = await omni_client.generate(
+            input_path,
+            history,
+            max_tokens=max_tokens,
+        )
+        omni_result = _parse_omni_output(generation.output)
+        if generation.tool_trace:
+            (turn_dir / "tool-trace.json").write_text(
+                json.dumps(
+                    {"calls": generation.tool_trace},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
     else:
-        omni_result = run_omni(
+        omni_result = await asyncio.to_thread(
+            run_omni,
             input_path,
             settings,
             history=history,
-            omni_client=omni_client,
             max_tokens=max_tokens,
         )
     omni_elapsed = time.perf_counter() - omni_started_at
@@ -80,7 +98,8 @@ def run_turn_pipeline(
         session.add_assistant_message(omni_result.text)
 
     tts_started_at = time.perf_counter()
-    audio_path = run_tts(
+    audio_path = await asyncio.to_thread(
+        run_tts,
         omni_result.text,
         turn_dir,
         settings,
@@ -103,14 +122,14 @@ def run_turn_pipeline(
     )
 
 
-def run_demo_pipeline(
+async def run_demo_pipeline(
     input_audio: bytes,
     settings: Settings,
     omni_client: OmniServerClient | None = None,
     max_tokens: int | None = None,
     tts_num_steps: int | None = None,
 ) -> TurnResult:
-    return run_turn_pipeline(
+    return await run_turn_pipeline(
         input_audio,
         settings,
         omni_client=omni_client,

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "mcpServers": {
+    "switchbot": {
+      "command": "/absolute/path/to/switchbot",
+      "args": ["mcp", "serve"],
+      "enabled": true,
+      "allowedTools": [
+        "list_devices",
+        "get_device_status",
+        "send_command",
+        "list_scenes",
+        "run_scene"
+      ],
+      "timeoutSeconds": 30
+    },
+    "remote-example": {
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": {
+        "Authorization": "Bearer ${REMOTE_MCP_TOKEN}"
+      },
+      "enabled": false,
+      "allowedTools": ["search"]
+    }
+  }
+}
