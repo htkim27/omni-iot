@@ -29,7 +29,9 @@ DEFAULT_LLAMA_CLI = (
     / "llama-cli"
 )
 DEFAULT_MODEL = PROJECT_ROOT / "models" / "Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf"
-DEFAULT_MMPROJ = PROJECT_ROOT / "models" / "mmproj-Qwen3-Omni-30B-A3B-Instruct-Q8_0.gguf"
+DEFAULT_MMPROJ = (
+    PROJECT_ROOT / "models" / "mmproj-Qwen3-Omni-30B-A3B-Instruct-Q8_0.gguf"
+)
 DEFAULT_SYSTEM = (
     "You are a private local Korean voice assistant for a Jarvis-style IoT project. "
     "Answer naturally and concisely in Korean."
@@ -70,6 +72,7 @@ class ToolCall:
 class ChatCompletion:
     content: str | None
     tool_calls: tuple[ToolCall, ...] = ()
+    usage: dict[str, int] | None = None
 
     def as_assistant_message(self) -> dict[str, object]:
         message: dict[str, object] = {
@@ -79,6 +82,39 @@ class ChatCompletion:
         if self.tool_calls:
             message["tool_calls"] = [call.as_message_item() for call in self.tool_calls]
         return message
+
+
+@dataclass(frozen=True)
+class ParsedModelTurn:
+    transcript: str | None
+    response: str
+    raw_transcript: object = None
+    parse_status: str = "plain_text_fallback"
+    structured_output_valid: bool = False
+    fallback_reason: str | None = None
+    transcript_normalization: str = "missing"
+
+    def __iter__(self):
+        """Retain tuple-unpacking compatibility for existing callers."""
+        yield self.transcript
+        yield self.response
+
+    def output_json(self) -> str:
+        return json.dumps(
+            {"user_text": self.transcript, "text": self.response},
+            ensure_ascii=False,
+        )
+
+    def trace(self) -> dict[str, object]:
+        return {
+            "transcript": self.transcript,
+            "response": self.response,
+            "raw_transcript": self.raw_transcript,
+            "parse_status": self.parse_status,
+            "structured_output_valid": self.structured_output_valid,
+            "fallback_reason": self.fallback_reason,
+            "transcript_normalization": self.transcript_normalization,
+        }
 
 
 class LlamaServer:
@@ -129,9 +165,7 @@ class LlamaServer:
             if self.process.poll() is not None:
                 error = self._log_tail(log_path)
                 self.stop()
-                raise RuntimeError(
-                    "llama-server exited during startup.\n" + error
-                )
+                raise RuntimeError("llama-server exited during startup.\n" + error)
             if self._is_healthy():
                 return
             time.sleep(0.25)
@@ -174,15 +208,13 @@ class LlamaServer:
             max_tokens=max_tokens,
         )
         if completion.tool_calls:
-            raise RuntimeError("llama-server requested a tool but no tool runner is active.")
+            raise RuntimeError(
+                "llama-server requested a tool but no tool runner is active."
+            )
         if not completion.content:
             raise RuntimeError("llama-server returned an empty assistant response.")
 
-        transcript, answer = _parse_model_turn(completion.content)
-        return json.dumps(
-            {"user_text": transcript, "text": answer},
-            ensure_ascii=False,
-        )
+        return _parse_model_turn(completion.content).output_json()
 
     def chat(
         self,
@@ -211,16 +243,16 @@ class LlamaServer:
             payload,
             timeout=self.settings.omni_timeout_seconds,
         )
-        try:
-            message = response["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
+        choices = response.get("choices")
+        first_choice = choices[0] if isinstance(choices, list) and choices else None
+        message = (
+            first_choice.get("message") if isinstance(first_choice, dict) else None
+        )
+        if not isinstance(message, dict):
             raise RuntimeError(
                 "llama-server returned an unexpected response: "
                 f"{json.dumps(response, ensure_ascii=False)}"
-            ) from exc
-
-        if not isinstance(message, dict):
-            raise RuntimeError("llama-server assistant message must be an object.")
+            )
         content = message.get("content")
         if isinstance(content, list):
             content = "".join(
@@ -234,7 +266,12 @@ class LlamaServer:
         calls = _parse_tool_calls(message.get("tool_calls"))
         if not normalized_content and not calls:
             raise RuntimeError("llama-server returned an empty assistant response.")
-        return ChatCompletion(content=normalized_content, tool_calls=tuple(calls))
+        usage = _parse_usage(response.get("usage"))
+        return ChatCompletion(
+            content=normalized_content,
+            tool_calls=tuple(calls),
+            usage=usage,
+        )
 
     def _command(self) -> list[str]:
         command = [
@@ -346,6 +383,17 @@ def _parse_tool_calls(value: object) -> list[ToolCall]:
     return calls
 
 
+def _parse_usage(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    usage = {
+        str(key): item
+        for key, item in value.items()
+        if isinstance(item, int) and not isinstance(item, bool)
+    }
+    return usage or None
+
+
 def _build_chat_messages(
     audio_data: str,
     history: list[dict[str, str]],
@@ -353,9 +401,7 @@ def _build_chat_messages(
     prompt: str = DEFAULT_PROMPT,
 ) -> list[dict[str, object]]:
     system_instruction = (
-        f"{system_prompt}\n\n"
-        f"{prompt}\n\n"
-        f"{_structured_output_instruction()}"
+        f"{system_prompt}\n\n{prompt}\n\n{_structured_output_instruction()}"
     )
     messages: list[dict[str, object]] = [
         {"role": "system", "content": system_instruction},
@@ -411,7 +457,9 @@ def run_llama_omni(
     warmup: bool = False,
     timeout: int = 180,
 ) -> str:
-    with tempfile.NamedTemporaryFile("r", encoding="utf-8", suffix=".txt", delete=False) as output:
+    with tempfile.NamedTemporaryFile(
+        "r", encoding="utf-8", suffix=".txt", delete=False
+    ) as output:
         output_path = Path(output.name)
 
     turn_prompt = _build_turn_prompt(prompt, history or [])
@@ -471,7 +519,9 @@ def run_llama_omni(
         text = completed.stdout.strip()
     text = _extract_assistant_text(text)
     if not text:
-        raise RuntimeError("llama.cpp OMNI command completed but produced no text output.")
+        raise RuntimeError(
+            "llama.cpp OMNI command completed but produced no text output."
+        )
     return text
 
 
@@ -498,9 +548,11 @@ def _build_turn_prompt(prompt: str, history: list[dict[str, str]]) -> str:
     )
 
 
-def _parse_model_turn(text: str) -> tuple[str | None, str]:
-    stripped = text.strip()
-    if stripped.startswith("```"):
+def _parse_model_turn(text: str) -> ParsedModelTurn:
+    original = text.strip()
+    stripped = original
+    fenced = stripped.startswith("```")
+    if fenced:
         lines = stripped.splitlines()
         if lines and lines[0].startswith("```"):
             lines = lines[1:]
@@ -510,19 +562,78 @@ def _parse_model_turn(text: str) -> tuple[str | None, str]:
 
     start = stripped.find("{")
     end = stripped.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            payload = json.loads(stripped[start : end + 1])
-        except json.JSONDecodeError:
-            payload = None
-        if isinstance(payload, dict):
-            response = payload.get("response") or payload.get("text")
-            transcript = payload.get("transcript") or payload.get("user_text")
-            if isinstance(response, str) and response.strip():
-                normalized_transcript = normalize_user_transcript(transcript)
-                return normalized_transcript, response.strip()
+    if start < 0 or end <= start:
+        return ParsedModelTurn(
+            transcript=None,
+            response=original,
+            fallback_reason="No JSON object was found in the model output.",
+        )
 
-    return None, stripped
+    candidate = stripped[start : end + 1]
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return ParsedModelTurn(
+            transcript=None,
+            response=original,
+            parse_status="invalid_json",
+            fallback_reason="The detected JSON object could not be decoded.",
+        )
+
+    if not isinstance(payload, dict):
+        return ParsedModelTurn(
+            transcript=None,
+            response=original,
+            parse_status="invalid_schema",
+            fallback_reason="The decoded JSON value was not an object.",
+        )
+
+    response = payload.get("response") or payload.get("text")
+    raw_transcript = (
+        payload.get("transcript")
+        if "transcript" in payload
+        else payload.get("user_text")
+    )
+    if not isinstance(response, str) or not response.strip():
+        return ParsedModelTurn(
+            transcript=None,
+            response=original,
+            raw_transcript=raw_transcript,
+            parse_status="invalid_schema",
+            fallback_reason="The JSON object had no non-empty response field.",
+            transcript_normalization=_transcript_normalization(raw_transcript, None),
+        )
+
+    transcript = normalize_user_transcript(raw_transcript)
+    if fenced:
+        parse_status = "fenced_json"
+    elif start != 0 or end != len(stripped) - 1:
+        parse_status = "embedded_json"
+    else:
+        parse_status = "valid_json"
+    return ParsedModelTurn(
+        transcript=transcript,
+        response=response.strip(),
+        raw_transcript=raw_transcript,
+        parse_status=parse_status,
+        structured_output_valid=True,
+        transcript_normalization=_transcript_normalization(
+            raw_transcript,
+            transcript,
+        ),
+    )
+
+
+def _transcript_normalization(raw: object, normalized: str | None) -> str:
+    if normalized is not None:
+        return "accepted"
+    if raw is None:
+        return "missing"
+    if not isinstance(raw, str):
+        return "invalid_type"
+    if not raw.strip():
+        return "blank"
+    return "placeholder_filtered"
 
 
 def _load_history(path: Path | None) -> list[dict[str, str]]:
@@ -544,24 +655,57 @@ def _load_history(path: Path | None) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run local Qwen3-Omni through llama.cpp.")
+    parser = argparse.ArgumentParser(
+        description="Run local Qwen3-Omni through llama.cpp."
+    )
     parser.add_argument("--audio", "--input", dest="audio", type=Path, required=True)
-    parser.add_argument("--llama-cli", type=Path, default=Path(os.getenv("LLAMA_CLI", DEFAULT_LLAMA_CLI)))
-    parser.add_argument("--model", type=Path, default=Path(os.getenv("OMNI_MODEL", DEFAULT_MODEL)))
-    parser.add_argument("--mmproj", type=Path, default=Path(os.getenv("OMNI_MMPROJ", DEFAULT_MMPROJ)))
+    parser.add_argument(
+        "--llama-cli",
+        type=Path,
+        default=Path(os.getenv("LLAMA_CLI", DEFAULT_LLAMA_CLI)),
+    )
+    parser.add_argument(
+        "--model", type=Path, default=Path(os.getenv("OMNI_MODEL", DEFAULT_MODEL))
+    )
+    parser.add_argument(
+        "--mmproj", type=Path, default=Path(os.getenv("OMNI_MMPROJ", DEFAULT_MMPROJ))
+    )
     parser.add_argument("--gpu-layers", default=os.getenv("LLAMA_N_GPU_LAYERS", "32"))
     parser.add_argument("--device", default=os.getenv("LLAMA_DEVICE") or None)
-    parser.add_argument("--no-op-offload", action="store_true", default=os.getenv("LLAMA_OP_OFFLOAD", "true").lower() in {"0", "false", "no", "off"})
-    parser.add_argument("--no-mmproj-offload", action="store_true", default=os.getenv("LLAMA_MMPROJ_OFFLOAD", "true").lower() in {"0", "false", "no", "off"})
+    parser.add_argument(
+        "--no-op-offload",
+        action="store_true",
+        default=os.getenv("LLAMA_OP_OFFLOAD", "true").lower()
+        in {"0", "false", "no", "off"},
+    )
+    parser.add_argument(
+        "--no-mmproj-offload",
+        action="store_true",
+        default=os.getenv("LLAMA_MMPROJ_OFFLOAD", "true").lower()
+        in {"0", "false", "no", "off"},
+    )
     parser.add_argument("--prompt", default=os.getenv("OMNI_PROMPT", DEFAULT_PROMPT))
     parser.add_argument("--history-file", type=Path)
     parser.add_argument("--json-output", action="store_true")
-    parser.add_argument("--system-prompt", default=os.getenv("OMNI_SYSTEM_PROMPT", DEFAULT_SYSTEM))
-    parser.add_argument("--ctx-size", type=int, default=int(os.getenv("LLAMA_CTX_SIZE", "4096")))
-    parser.add_argument("--n-predict", type=int, default=int(os.getenv("LLAMA_N_PREDICT", "192")))
+    parser.add_argument(
+        "--system-prompt", default=os.getenv("OMNI_SYSTEM_PROMPT", DEFAULT_SYSTEM)
+    )
+    parser.add_argument(
+        "--ctx-size", type=int, default=int(os.getenv("LLAMA_CTX_SIZE", "4096"))
+    )
+    parser.add_argument(
+        "--n-predict", type=int, default=int(os.getenv("LLAMA_N_PREDICT", "192"))
+    )
     parser.add_argument("--flash-attn", default=os.getenv("LLAMA_FLASH_ATTN", "off"))
-    parser.add_argument("--warmup", action="store_true", default=os.getenv("LLAMA_WARMUP", "false").lower() in {"1", "true", "yes", "on"})
-    parser.add_argument("--timeout", type=int, default=int(os.getenv("OMNI_TIMEOUT_SECONDS", "180")))
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        default=os.getenv("LLAMA_WARMUP", "false").lower()
+        in {"1", "true", "yes", "on"},
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=int(os.getenv("OMNI_TIMEOUT_SECONDS", "180"))
+    )
     args = parser.parse_args()
 
     generated = run_llama_omni(
@@ -582,16 +726,11 @@ def main() -> None:
         warmup=args.warmup,
         timeout=args.timeout,
     )
-    transcript, response = _parse_model_turn(generated)
+    parsed = _parse_model_turn(generated)
     if args.json_output:
-        print(
-            json.dumps(
-                {"user_text": transcript, "text": response},
-                ensure_ascii=False,
-            )
-        )
+        print(parsed.output_json())
     else:
-        print(response)
+        print(parsed.response)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from .runtime import prune_runtime_turns
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,6 +63,17 @@ class Settings:
         "CONVERSATION_HISTORY_MESSAGES",
         12,
     )
+    ai_eval_enabled: bool = _bool_env("AI_EVAL_ENABLED", False)
+    langfuse_base_url: str = os.getenv(
+        "LANGFUSE_BASE_URL",
+        "http://127.0.0.1:3000",
+    )
+    langfuse_public_key: str | None = os.getenv("LANGFUSE_PUBLIC_KEY") or None
+    langfuse_secret_key: str | None = os.getenv("LANGFUSE_SECRET_KEY") or None
+    langfuse_environment: str = os.getenv(
+        "LANGFUSE_TRACING_ENVIRONMENT",
+        "local-eval",
+    )
     mcp_config: Path = _path_env("MCP_CONFIG", PROJECT_ROOT / ".mcp.json")
     mcp_tool_catalog_max_chars: int = _int_env(
         "MCP_TOOL_CATALOG_MAX_CHARS",
@@ -99,11 +110,17 @@ class Settings:
     llama_gpu_layers: str = os.getenv("LLAMA_N_GPU_LAYERS", "20")
     llama_device: str | None = os.getenv("LLAMA_DEVICE") or None
     llama_op_offload: bool = os.getenv("LLAMA_OP_OFFLOAD", "true").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
-    llama_mmproj_offload: bool = os.getenv(
-        "LLAMA_MMPROJ_OFFLOAD", "true"
-    ).lower() in {"1", "true", "yes", "on"}
+    llama_mmproj_offload: bool = os.getenv("LLAMA_MMPROJ_OFFLOAD", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     llama_ctx_size: int = _int_env("LLAMA_CTX_SIZE", 4096)
     llama_n_predict: int = _int_env("LLAMA_N_PREDICT", 192)
     llama_temperature: float = _float_env("LLAMA_TEMPERATURE", 0.2)
@@ -112,7 +129,10 @@ class Settings:
     llama_cache_prompt: bool = _bool_env("LLAMA_CACHE_PROMPT", True)
     llama_flash_attn: str = os.getenv("LLAMA_FLASH_ATTN", "off")
     llama_warmup: bool = os.getenv("LLAMA_WARMUP", "false").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
     tts_backend: str = os.getenv("TTS_BACKEND", "command").lower()
     tts_command: str | None = os.getenv("TTS_COMMAND") or None
@@ -122,12 +142,13 @@ class Settings:
     omnivoice_language: str | None = os.getenv("OMNIVOICE_LANGUAGE", "ko") or None
     omnivoice_instruct: str | None = os.getenv("OMNIVOICE_INSTRUCT") or None
     omnivoice_speed: float | None = (
-        float(os.environ["OMNIVOICE_SPEED"])
-        if os.getenv("OMNIVOICE_SPEED")
-        else None
+        float(os.environ["OMNIVOICE_SPEED"]) if os.getenv("OMNIVOICE_SPEED") else None
     )
     omnivoice_warmup: bool = os.getenv("OMNIVOICE_WARMUP", "true").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
     omnivoice_num_steps: int = _int_env("OMNIVOICE_NUM_STEPS", 32)
     vad_threshold: float = _float_env("VAD_THRESHOLD", 0.04)
@@ -154,6 +175,24 @@ def get_settings() -> Settings:
         raise ValueError("RUNTIME_TURN_LIMIT must be at least 1.")
     if settings.conversation_history_messages < 0:
         raise ValueError("CONVERSATION_HISTORY_MESSAGES must not be negative.")
+    if settings.ai_eval_enabled:
+        if not settings.langfuse_base_url.strip():
+            raise ValueError("LANGFUSE_BASE_URL is required when AI_EVAL_ENABLED=true.")
+        if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+            raise ValueError(
+                "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are required when "
+                "AI_EVAL_ENABLED=true."
+            )
+        if (
+            len(settings.langfuse_environment) > 40
+            or settings.langfuse_environment.startswith("langfuse")
+            or re.fullmatch(r"[a-z0-9_-]+", settings.langfuse_environment) is None
+        ):
+            raise ValueError(
+                "LANGFUSE_TRACING_ENVIRONMENT must use at most 40 lowercase "
+                "letters, numbers, hyphens, or underscores and must not start "
+                "with 'langfuse'."
+            )
     if settings.mcp_tool_catalog_max_chars < 1:
         raise ValueError("MCP_TOOL_CATALOG_MAX_CHARS must be positive.")
     if settings.mcp_tool_result_max_chars < 1:

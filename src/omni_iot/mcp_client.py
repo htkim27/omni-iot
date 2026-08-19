@@ -19,7 +19,6 @@ from mcp.client.streamable_http import streamable_http_client
 
 from .mcp_config import McpConfigError, McpServerConfig, load_mcp_config
 
-
 OPENAI_TOOL_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]")
 OPENAI_TOOL_NAME_MAX_LENGTH = 64
 
@@ -39,6 +38,7 @@ class McpCallResult:
     server_name: str
     tool_name: str
     seconds: float
+    truncated: bool = False
 
     def trace(self) -> dict[str, object]:
         return {
@@ -46,6 +46,7 @@ class McpCallResult:
             "tool": self.tool_name,
             "seconds": round(self.seconds, 3),
             "ok": not self.is_error,
+            "truncated": self.truncated,
         }
 
 
@@ -173,6 +174,7 @@ class McpManager:
             return self._error_result(binding, runtime.error, started_at)
 
         content = _tool_result_text(result)
+        truncated = len(content) > self.result_max_chars
         content = _truncate_result(content, self.result_max_chars)
         return McpCallResult(
             content=content,
@@ -180,6 +182,7 @@ class McpManager:
             server_name=binding.server_name,
             tool_name=binding.tool_name,
             seconds=time.perf_counter() - started_at,
+            truncated=truncated,
         )
 
     def health(self) -> dict[str, object]:
