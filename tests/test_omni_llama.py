@@ -55,7 +55,9 @@ class OmniLlamaTest(unittest.TestCase):
                 ]
             }
 
-            with patch.object(server, "_request_json", return_value=response) as request:
+            with patch.object(
+                server, "_request_json", return_value=response
+            ) as request:
                 result = json.loads(server.generate(audio_path, [], max_tokens=96))
 
             self.assertEqual(result, {"user_text": "안녕", "text": "반가워요."})
@@ -95,7 +97,9 @@ class OmniLlamaTest(unittest.TestCase):
         ]
 
         with patch.object(server, "_request_json", return_value=response) as request:
-            completion = server.chat([{"role": "user", "content": "devices"}], tools=tools)
+            completion = server.chat(
+                [{"role": "user", "content": "devices"}], tools=tools
+            )
 
         self.assertEqual(completion.tool_calls[0].name, "switchbot__list_devices")
         payload = request.call_args.args[1]
@@ -141,27 +145,49 @@ class OmniLlamaTest(unittest.TestCase):
         self.assertIn("키는 transcript와 response", prompt)
 
     def test_parse_model_turn_accepts_fenced_json(self) -> None:
-        transcript, response = _parse_model_turn(
+        parsed = _parse_model_turn(
             '```json\n{"transcript":"기억해?","response":"네, 기억해요."}\n```'
         )
+        transcript, response = parsed
 
         self.assertEqual(transcript, "기억해?")
         self.assertEqual(response, "네, 기억해요.")
+        self.assertEqual(parsed.parse_status, "fenced_json")
+        self.assertTrue(parsed.structured_output_valid)
 
     def test_parse_model_turn_falls_back_to_plain_text(self) -> None:
-        transcript, response = _parse_model_turn("그대로 사용할 응답")
+        parsed = _parse_model_turn("그대로 사용할 응답")
+        transcript, response = parsed
 
         self.assertIsNone(transcript)
         self.assertEqual(response, "그대로 사용할 응답")
+        self.assertEqual(parsed.parse_status, "plain_text_fallback")
+        self.assertFalse(parsed.structured_output_valid)
 
     def test_parse_model_turn_discards_copied_transcript_placeholder(self) -> None:
-        transcript, response = _parse_model_turn(
+        parsed = _parse_model_turn(
             '{"transcript":"사용자가 실제로 말한 내용",'
             '"response":"다시 말씀해 주세요."}'
         )
+        transcript, response = parsed
 
         self.assertIsNone(transcript)
         self.assertEqual(response, "다시 말씀해 주세요.")
+        self.assertEqual(parsed.transcript_normalization, "placeholder_filtered")
+
+    def test_parse_model_turn_reports_embedded_invalid_json_and_schema(self) -> None:
+        embedded = _parse_model_turn(
+            'prefix {"transcript":"안녕","response":"반가워요"} suffix'
+        )
+        invalid_json = _parse_model_turn('{"transcript":"안녕",}')
+        invalid_schema = _parse_model_turn('{"transcript":"안녕"}')
+
+        self.assertEqual(embedded.parse_status, "embedded_json")
+        self.assertTrue(embedded.structured_output_valid)
+        self.assertEqual(invalid_json.parse_status, "invalid_json")
+        self.assertIn("could not be decoded", invalid_json.fallback_reason or "")
+        self.assertEqual(invalid_schema.parse_status, "invalid_schema")
+        self.assertIn("response field", invalid_schema.fallback_reason or "")
 
     def test_prompt_does_not_contain_copyable_transcript_example(self) -> None:
         prompt = _build_turn_prompt("대답해줘.", [])
