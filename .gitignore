@@ -3,6 +3,7 @@
 __pycache__/
 *.py[cod]
 .env
+.mcp.json
 vendor/
 models/*.gguf
 models/openwakeword/

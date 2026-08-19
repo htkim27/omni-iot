@@ -6,7 +6,7 @@
 
 최종 목표는 사설 로컬 환경에서 항상 대화할 수 있고, MCP 도구를 통해 IoT 기기를 제어하며, 여러 방의 입력 장치와 스피커를 구분해 사용할 수 있는 음성 어시스턴트입니다.
 
-현재 개발 범위는 다음과 같습니다.
+현재 프로토타입은 방1의 입출력 장치를 기준으로 다음 흐름까지 동작합니다.
 
 ```text
 브라우저 음성 입력
@@ -18,7 +18,15 @@
   → 브라우저 재생
 ```
 
-MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅은 로컬 대화 루프가 안정화된 뒤 진행합니다.
+MCP 도구 호출 하네스와 SwitchBot MCP 연결을 구현했고, 실제 에어컨과 선풍기를 제어 대상으로 연결했습니다. 남은 프로토타입 범위는 SwitchBot 물리 스위치로 조명을 켜고 끄는 기능과, 방1 장치를 유지하면서 거실 Bluetooth 스피커 및 추가 입력 source를 연결하는 다중 입력 구성입니다.
+
+프로토타입 범위는 아래 세 묶음으로 고정합니다.
+
+1. [완료] 방1 음성 입출력, 로컬 OMNI/TTS 대화, 에어컨·선풍기 MCP 제어
+2. [진행 예정] SwitchBot 물리 스위치 기반 조명 on/off
+3. [진행 예정] 거실 Bluetooth 스피커 출력과 방1·거실 다중 입력 처리
+
+거실 입력 장치의 하드웨어와 transport는 장비 검증 후 결정합니다. 프로토타입에서는 범용 멀티룸 추상화보다 각 입력의 source/room 식별, 독립적인 발화 처리, 응답을 해당 위치로 돌려보내는 최소 라우팅을 우선합니다.
 
 ## 2. 현재 구현 상태
 
@@ -40,6 +48,7 @@ MCP 도구 호출, 실제 IoT 제어, Android 입력 장치 및 방별 라우팅
 | `omni-iot-omni` | WAV를 Qwen3-Omni에 직접 입력 |
 | `omni-iot-tts` | 텍스트를 OmniVoice WAV로 합성 |
 | `omni-iot-wakeword-models` | 공식 openWakeWord 모델 준비 |
+| `omni-iot-mcp` | MCP stdio/HTTP 서버 등록, allowlist 관리와 진단 |
 
 ### 2.2 브라우저 음성 하네스
 
@@ -203,6 +212,23 @@ uv run omni-iot-tts \
   --output .runtime/omnivoice_smoke.wav
 ```
 
+### 2.6 MCP 클라이언트와 IoT 도구
+
+대표 milestone은 `M2 — MCP Client & IoT Tool Integration`이며 `Phase 4`에 대응합니다.
+
+- [x] 공식 MCP Python SDK `mcp>=2,<3` 기반 stdio/Streamable HTTP 연결
+- [x] `.mcp.json` 설정, exact allowlist, 환경변수 치환과 atomic 관리 CLI
+- [x] Qwen3-Omni/llama-server OpenAI tool-call orchestration
+- [x] 서버별 fail-closed, 재연결, catalog/result 제한과 최소 trace
+- [x] SwitchBot 공식 CLI 인증 및 `switchbot mcp serve` stdio 연결
+- [x] `doctor`에서 SwitchBot 연결 `healthy`와 허용 도구 5개 확인 (2026-08-19)
+- [x] MCP 제어 대상으로 에어컨·선풍기 연결
+- [ ] 실제 Qwen 음성으로 에어컨·선풍기 반복 제어 acceptance
+- [x] SwitchBot 물리 스위치 하드웨어·앱 연결
+- [ ] SwitchBot 물리 스위치의 Hub/OpenAPI discovery 및 조명 on/off acceptance
+
+실제 API 키, 인증 토큰과 로컬 실행 파일 경로는 milestone 문서나 git 추적 파일에 기록하지 않습니다. `.env`와 `.mcp.json`은 모두 gitignore 대상입니다.
+
 ## 3. 설정 및 command hook
 
 프로젝트의 `.env.example`을 `.env`로 복사해 사용합니다. `.env` loader는 이미 셸에 존재하는 환경 변수 값을 덮어쓰지 않습니다.
@@ -246,6 +272,12 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 - [x] `/api/turn`에서 재생 가능한 `audio_url` 반환
 - [x] `Hey Jarvis → 명령 대기 → 응답 → follow-up → sleep` 반복 흐름
 - [x] system 지시와 user 오디오 분리
+- [x] MCP 설정/CLI/allowlist 회귀 테스트
+- [x] MCP pagination, structured/text/error 결과와 catalog 상한 테스트
+- [x] 단일·복수 tool call, 순차 실행, 잘못된 인자와 호출 한도 테스트
+- [x] llama 요청 tools와 assistant/tool 메시지 재전달 테스트
+- [x] SwitchBot MCP 인증, stdio 연결 및 허용 도구 5개 discovery
+- [x] MCP를 통한 에어컨·선풍기 제어 연결
 
 남은 end-to-end 검증:
 
@@ -254,6 +286,11 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 - [ ] 긴 발화의 무음 종료 및 최대 턴 설정 검증
 - [ ] 응답 도중 barge-in 장시간 반복
 - [ ] 20~24 GPU layers별 peak VRAM과 latency 비교
+- [ ] 실제 Qwen 한국어 음성으로 fixture MCP 선택 → 호출 → 최종 TTS
+- [ ] 일반 질문에서 불필요한 tool call이 없는지 실제 Qwen 검증
+- [ ] 실제 Qwen 음성으로 에어컨·선풍기 반복 제어 및 오류 acceptance
+- [ ] SwitchBot 물리 스위치의 MCP 노출 및 조명 turnOn·turnOff acceptance
+- [ ] 방1과 거실의 동시 입력·출력 routing acceptance
 
 pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하며, 실제 음질과 브라우저 마이크 동작은 로컬 smoke test로 검증합니다.
 
@@ -301,37 +338,52 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 
 ### Phase 4 — MCP 클라이언트
 
-상태: 미착수
+상태: 하네스 및 에어컨·선풍기 연결 완료, 조명 스위치 acceptance 대기
 
-- [ ] MCP server 설정 형식 정의
-- [ ] server 연결과 tool 목록 조회
-- [ ] tool 호출 및 결과 반환
-- [ ] OMNI 대화 루프에 tool-call 경계 연결
-- [ ] timeout, 실패, 사용자 확인 정책 정의
+- [x] `.mcp.json` v1 설정, 환경변수 치환과 atomic CLI 관리
+- [x] 공식 MCP Python SDK stdio/Streamable HTTP 장기 연결
+- [x] pagination, exact allowlist, namespaced OpenAI tool catalog
+- [x] structured/text/error 결과 정규화, 크기/시간 제한과 재연결
+- [x] Qwen3-Omni/llama-server OpenAI tools agent loop
+- [x] 최대 4 round/8 call, 순차 실행과 강제 최종 응답
+- [x] 서버별 fail-closed 격리와 `/api/health`, `doctor` 진단
+- [x] tool trace 최소 기록 및 최종 대화만 history에 보존
+- [ ] 실제 Qwen 음성 tool smoke test
+- [x] 공식 SwitchBot CLI 설치·인증 및 5개 도구 discovery
+- [x] 에어컨·선풍기를 실제 MCP 제어 대상으로 연결
+- [ ] 에어컨·선풍기의 실제 Qwen 음성 반복 제어 및 오류 acceptance
+- [x] SwitchBot 물리 스위치 하드웨어·앱 연결
+- [ ] SwitchBot 물리 스위치의 Hub/OpenAPI discovery와 조명 켜기·끄기 acceptance
 
-초기에는 MCP 클라이언트 기능만 구현하며 실제 IoT 도구는 별도 단계로 둡니다.
+v1은 tools만 연결하며 resources, prompts, sampling, elicitation, tasks와 웹 관리 UI는 제외합니다. `.mcp.json`의 allowlist를 권한 경계로 사용하고 SwitchBot 자체 안전 정책은 그대로 유지합니다.
 
-### Phase 5 — IoT 및 방별 장치
+### Phase 5 — 거실 오디오 및 다중 입력
 
-상태: 미착수
+상태: 프로토타입 마지막 단계, 설계 및 장비 선정 대기
 
-- [ ] Android phone을 always-on 센서/스피커로 사용하는 bridge 설계
-- [ ] Bluetooth 스피커와 입력 센서 조합 검토
-- [ ] WebSocket, HTTP streaming, MQTT 중 transport 결정
-- [ ] device identity와 room identity 정의
-- [ ] 방별 응답 출력 routing
+- [x] 방1 브라우저 기반 입출력 장치 동작
+- [ ] 거실 Bluetooth 스피커 설치 및 서버 출력 경로 연결
+- [ ] 거실에서 사용할 입력 장치 선정
+- [ ] 방1과 거실 입력을 동시에 수용하는 연결 방식 결정
+- [ ] 입력별 `source_id`와 `room_id` 정의
+- [ ] 입력 source별 wake/VAD/대화 상태 격리
+- [ ] 요청이 들어온 방으로 응답 오디오를 보내는 최소 routing
+- [ ] 두 위치의 발화가 겹칠 때 직렬화 또는 우선순위 정책 정의
 - [ ] 네트워크 단절과 재연결 처리
+
+이 단계의 완료 기준은 방1과 거실 양쪽에서 음성 명령을 시작할 수 있고, 각 응답이 의도한 위치에서 재생되며, 한 입력의 wake/VAD/session 상태가 다른 입력을 오염시키지 않는 것입니다. Android bridge, MQTT, 범용 멀티룸 장치 등록 UI는 필요한 경우 후속 단계에서 다룹니다.
 
 ## 6. 우선순위
 
 다음 순서로 진행합니다.
 
-1. 다양한 실제 환경에서 호출어와 VAD 민감도 보정
-2. AudioWorklet 전환과 장시간 WebSocket 안정성 검증
-3. 16GB VRAM 안에서 OMNI/TTS latency 추가 최적화
-4. transcript 오류 방어와 세션 수명 관리 보강
-5. MCP 클라이언트 설계와 최소 tool 호출 구현
-6. Android 및 방별 오디오 장치 연결
+1. 에어컨·선풍기의 실제 Qwen 음성 반복 제어와 오류 acceptance
+2. SwitchBot 물리 스위치의 MCP 노출 및 조명 켜기·끄기 검증
+3. 거실 Bluetooth 스피커 출력 연결
+4. 거실 입력 장치 선정과 방1·거실 다중 입력 처리
+5. 입력 source/room별 세션 격리와 응답 출력 routing 검증
+
+호출어/VAD 보정, AudioWorklet 전환, latency 최적화와 transcript 품질 개선은 위 작업과 병행하되 프로토타입 범위를 확장하지 않습니다.
 
 ## 7. 완료 조건
 
@@ -344,4 +396,4 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 - 모델/명령 오류가 UI와 로그에 진단 가능한 형태로 노출
 - 핵심 pipeline과 API에 자동화된 회귀 테스트 존재
 
-이 조건을 충족한 뒤 MCP 및 IoT 장치 단계로 넘어갑니다.
+MCP 하네스 완료 조건에는 자동화 테스트 전체 통과와 함께 실제 Qwen 음성 fixture 및 SwitchBot 계정/장치 smoke test가 포함됩니다. 후자는 Node.js 18+, `@switchbot/openapi-cli`, 사용자 인증과 실제 비위험 장치가 준비된 목표 장비에서 수행합니다.

@@ -63,6 +63,17 @@ class Settings:
         "CONVERSATION_HISTORY_MESSAGES",
         12,
     )
+    mcp_config: Path = _path_env("MCP_CONFIG", PROJECT_ROOT / ".mcp.json")
+    mcp_tool_catalog_max_chars: int = _int_env(
+        "MCP_TOOL_CATALOG_MAX_CHARS",
+        12_000,
+    )
+    mcp_tool_result_max_chars: int = _int_env(
+        "MCP_TOOL_RESULT_MAX_CHARS",
+        12_000,
+    )
+    mcp_max_tool_rounds: int = _int_env("MCP_MAX_TOOL_ROUNDS", 4)
+    mcp_max_tool_calls: int = _int_env("MCP_MAX_TOOL_CALLS", 8)
     omni_backend: str = os.getenv("OMNI_BACKEND", "command").lower()
     omni_command: str | None = os.getenv("OMNI_COMMAND") or None
     llama_server: Path = _path_env(
@@ -143,6 +154,12 @@ def get_settings() -> Settings:
         raise ValueError("RUNTIME_TURN_LIMIT must be at least 1.")
     if settings.conversation_history_messages < 0:
         raise ValueError("CONVERSATION_HISTORY_MESSAGES must not be negative.")
+    if settings.mcp_tool_catalog_max_chars < 1:
+        raise ValueError("MCP_TOOL_CATALOG_MAX_CHARS must be positive.")
+    if settings.mcp_tool_result_max_chars < 1:
+        raise ValueError("MCP_TOOL_RESULT_MAX_CHARS must be positive.")
+    if settings.mcp_max_tool_rounds < 1 or settings.mcp_max_tool_calls < 1:
+        raise ValueError("MCP tool round and call limits must be positive.")
     if settings.omni_backend not in {"command", "server"}:
         raise ValueError("OMNI_BACKEND must be either 'command' or 'server'.")
     if not 16 <= settings.llama_n_predict <= 512:

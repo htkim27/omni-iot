@@ -9,6 +9,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,12 +39,46 @@ DEFAULT_PROMPT = "사용자의 음성 입력을 듣고 한국어로 자연스럽
 
 def _structured_output_instruction() -> str:
     return (
+        "사용 가능한 도구가 있고 답변에 필요하면 먼저 도구를 호출하라. "
+        "도구 호출 자체를 최종 JSON 안에 넣지 말고, 도구 결과를 받은 뒤 최종 답변을 작성하라. "
         "반드시 다른 설명이나 Markdown 없이 JSON 객체 하나만 출력하라. "
         "키는 transcript와 response 두 개다. "
         "transcript에는 오디오에서 실제로 들은 사용자 발화를 그대로 적고, "
         "지시문이나 형식 설명을 복사하지 마라. 발화를 판별할 수 없으면 null을 사용하라. "
         "response에는 사용자에게 말할 자연스러운 한국어 답변을 적어라."
     )
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+    def as_message_item(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "arguments": self.arguments,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class ChatCompletion:
+    content: str | None
+    tool_calls: tuple[ToolCall, ...] = ()
+
+    def as_assistant_message(self) -> dict[str, object]:
+        message: dict[str, object] = {
+            "role": "assistant",
+            "content": self.content,
+        }
+        if self.tool_calls:
+            message["tool_calls"] = [call.as_message_item() for call in self.tool_calls]
+        return message
 
 
 class LlamaServer:
@@ -129,46 +164,77 @@ class LlamaServer:
         max_tokens: int | None = None,
     ) -> str:
         audio_data = base64.b64encode(audio_path.read_bytes()).decode("ascii")
-        payload = {
-            "messages": _build_chat_messages(
+        completion = self.chat(
+            messages=_build_chat_messages(
                 audio_data=audio_data,
                 history=history,
                 system_prompt=os.getenv("OMNI_SYSTEM_PROMPT", DEFAULT_SYSTEM),
                 prompt=os.getenv("OMNI_PROMPT", DEFAULT_PROMPT),
             ),
+            max_tokens=max_tokens,
+        )
+        if completion.tool_calls:
+            raise RuntimeError("llama-server requested a tool but no tool runner is active.")
+        if not completion.content:
+            raise RuntimeError("llama-server returned an empty assistant response.")
+
+        transcript, answer = _parse_model_turn(completion.content)
+        return json.dumps(
+            {"user_text": transcript, "text": answer},
+            ensure_ascii=False,
+        )
+
+    def chat(
+        self,
+        messages: list[dict[str, object]],
+        max_tokens: int | None = None,
+        tools: list[dict[str, object]] | None = None,
+    ) -> ChatCompletion:
+        payload: dict[str, object] = {
+            "messages": messages,
             "max_tokens": (
                 max_tokens if max_tokens is not None else self.settings.llama_n_predict
             ),
             "temperature": self.settings.llama_temperature,
             "cache_prompt": self.settings.llama_cache_prompt,
         }
+        if tools:
+            payload.update(
+                {
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                }
+            )
         response = self._request_json(
             "/v1/chat/completions",
             payload,
             timeout=self.settings.omni_timeout_seconds,
         )
         try:
-            content = response["choices"][0]["message"]["content"]
+            message = response["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(
                 "llama-server returned an unexpected response: "
                 f"{json.dumps(response, ensure_ascii=False)}"
             ) from exc
 
+        if not isinstance(message, dict):
+            raise RuntimeError("llama-server assistant message must be an object.")
+        content = message.get("content")
         if isinstance(content, list):
             content = "".join(
                 item.get("text", "")
                 for item in content
                 if isinstance(item, dict) and item.get("type") == "text"
             )
-        if not isinstance(content, str) or not content.strip():
+        if content is not None and not isinstance(content, str):
+            raise RuntimeError("llama-server assistant content must be text or null.")
+        normalized_content = content.strip() if isinstance(content, str) else None
+        calls = _parse_tool_calls(message.get("tool_calls"))
+        if not normalized_content and not calls:
             raise RuntimeError("llama-server returned an empty assistant response.")
-
-        transcript, answer = _parse_model_turn(content)
-        return json.dumps(
-            {"user_text": transcript, "text": answer},
-            ensure_ascii=False,
-        )
+        return ChatCompletion(content=normalized_content, tool_calls=tuple(calls))
 
     def _command(self) -> list[str]:
         command = [
@@ -191,6 +257,7 @@ class LlamaServer:
             str(self.settings.llama_parallel),
             "--threads",
             str(self.settings.llama_threads),
+            "--jinja",
         ]
         command.append(
             "--cache-prompt"
@@ -249,6 +316,34 @@ class LlamaServer:
             return "No llama-server log was created."
         content = path.read_text(encoding="utf-8", errors="replace")
         return "\n".join(content.splitlines()[-lines:])
+
+
+def _parse_tool_calls(value: object) -> list[ToolCall]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise RuntimeError("llama-server tool_calls must be an array.")
+    calls: list[ToolCall] = []
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise RuntimeError("llama-server tool call must be an object.")
+        function = raw.get("function")
+        source = function if isinstance(function, dict) else raw
+        name = source.get("name")
+        arguments = source.get("arguments", {})
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("llama-server tool call has no function name.")
+        if isinstance(arguments, dict):
+            arguments_text = json.dumps(arguments, ensure_ascii=False)
+        elif isinstance(arguments, str):
+            arguments_text = arguments
+        else:
+            raise RuntimeError("llama-server tool call arguments must be JSON.")
+        call_id = raw.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = f"call_{index}"
+        calls.append(ToolCall(id=call_id, name=name, arguments=arguments_text))
+    return calls
 
 
 def _build_chat_messages(

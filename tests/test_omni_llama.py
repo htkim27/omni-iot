@@ -63,6 +63,70 @@ class OmniLlamaTest(unittest.TestCase):
             self.assertTrue(payload["cache_prompt"])
             self.assertEqual(payload["max_tokens"], 96)
 
+    def test_chat_sends_tool_options_and_normalizes_nested_calls(self) -> None:
+        server = LlamaServer(Settings())
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "switchbot__list_devices",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "switchbot__list_devices",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+
+        with patch.object(server, "_request_json", return_value=response) as request:
+            completion = server.chat([{"role": "user", "content": "devices"}], tools=tools)
+
+        self.assertEqual(completion.tool_calls[0].name, "switchbot__list_devices")
+        payload = request.call_args.args[1]
+        self.assertEqual(payload["tools"], tools)
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertTrue(payload["parallel_tool_calls"])
+
+    def test_chat_normalizes_flat_llama_tool_call(self) -> None:
+        server = LlamaServer(Settings())
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {"name": "fixture__echo", "arguments": {"text": "hi"}}
+                        ]
+                    }
+                }
+            ]
+        }
+        with patch.object(server, "_request_json", return_value=response):
+            completion = server.chat([{"role": "user", "content": "echo"}])
+
+        self.assertEqual(completion.tool_calls[0].id, "call_0")
+        self.assertEqual(json.loads(completion.tool_calls[0].arguments), {"text": "hi"})
+
+    def test_managed_server_always_enables_jinja(self) -> None:
+        command = LlamaServer(Settings())._command()
+
+        self.assertIn("--jinja", command)
+
     def test_build_turn_prompt_includes_previous_conversation(self) -> None:
         prompt = _build_turn_prompt(
             "짧게 대답해줘.",
