@@ -151,11 +151,13 @@ uv run omni-iot-mcp enable switchbot
 uv run omni-iot-mcp remove switchbot
 ```
 
-SwitchBot과 Brave Search를 함께 사용하는 개발 환경에서는 저장소 루트의 통합 실행 스크립트를 사용할 수 있습니다. 이 스크립트는 누락된 서버만 최초 등록하고, 두 서버를 활성화한 뒤 `doctor`가 성공해야 애플리케이션을 시작합니다. 실행 전에 SwitchBot CLI 인증과 `.env`의 `BRAVE_API_KEY` 설정을 완료해야 합니다.
+현재 저장소에서 지원하는 전체 MCP 기능을 함께 사용하려면 저장소 루트의 `run-omni-iot.sh`로 애플리케이션을 시작합니다. 현재 전체 구성은 SwitchBot의 장치 목록·상태 조회·명령 실행 3개 도구와 Brave Search의 웹·뉴스 검색 2개 도구입니다. 스크립트는 누락된 서버만 최초 등록하고 두 서버를 활성화한 뒤, `doctor`가 성공해야 애플리케이션을 시작합니다.
 
 ```bash
 bash run-omni-iot.sh
 ```
+
+실행 전에 SwitchBot CLI 인증과 `.env`의 `BRAVE_API_KEY` 설정을 완료해야 합니다. 아직 사용하지 않는 SwitchBot Scene과 향후 추가될 MCP 서버는 이 “전체 구성”에 자동으로 포함되지 않으며, allowlist와 실행 스크립트를 명시적으로 변경한 뒤 활성화합니다.
 
 `.runtime/`과 `models/` 디렉터리는 `.gitkeep`만 추적합니다. 턴별 WAV·trace·로그와 GGUF·ONNX·외부 weight 등 로컬 실행 산출물은 크기나 민감도와 관계없이 커밋하지 않습니다.
 
