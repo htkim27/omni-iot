@@ -1,9 +1,32 @@
 .venv/
-.runtime/
+.runtime/*
+!.runtime/.gitkeep
 __pycache__/
 *.py[cod]
 .env
 .mcp.json
 vendor/
-models/*.gguf
-models/openwakeword/
+models/*
+!models/.gitkeep
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test and tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.uv/
+
+# Logs
+*.log
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store

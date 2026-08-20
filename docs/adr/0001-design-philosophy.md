@@ -26,7 +26,7 @@ Accepted
    - 기계적인 응답이 아닌, 일상적이고 자연스러운 대화(Jarvis 스타일)가 가능하도록 실시간 오디오 하네스를 구축합니다.
 
 4. **로컬 호출어와 명시적 대화 수명주기**
-   - 외부 서비스 없이 openWakeWord의 `Hey Jarvis` 모델로 sleep 상태를 해제합니다.
+   - 외부 서비스 없이 프로젝트에서 학습한 openWakeWord `오둥아` 모델로 sleep 상태를 해제합니다.
    - 오디오는 16kHz mono Int16 PCM WebSocket stream으로 전달합니다.
    - `sleeping → recording → processing → speaking → follow_up` 상태를 명시적으로 관리하고, 응답 후 제한된 시간 동안만 호출어 없는 후속 대화를 허용합니다.
 
