@@ -6,7 +6,4 @@ __pycache__/
 .mcp.json
 vendor/
 models/*.gguf
-models/openwakeword/*
-!models/openwakeword/오둥아.onnx
-!models/openwakeword/wakeword.onnx.data
-!models/openwakeword/오둥아.json
+models/openwakeword/
