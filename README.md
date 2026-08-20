@@ -111,6 +111,28 @@ uv run omni-iot
 
 `switchbot mcp serve`가 적용하는 확인·reviewed-plan·catalog 정책은 하네스에서 우회하지 않습니다. 연결 후 `/api/health`의 `mcp.servers`에서 transport, 상태와 노출 도구 수를 확인할 수 있습니다. 음성 smoke test는 장치 목록 → 특정 장치 상태 → 사용자가 선정한 비위험 장치의 `turnOn`/`turnOff` → 존재하지 않는 장치 오류 순서로 수행합니다. 현재 에어컨과 선풍기는 MCP 제어 대상으로 연결됐습니다. 다음 장치 범위는 SwitchBot 물리 스위치가 담당하는 조명이며, 음성으로 켜기·끄기를 검증합니다. 도구 호출 중간 메시지는 대화 history에 남기지 않고 `.runtime/<turn-id>/tool-trace.json`에 서버·도구·시간·성공 여부만 기록합니다.
 
+### Brave Search 연결
+
+공식 Brave Search MCP는 Node.js 22 이상과 Brave Search API 키가 필요합니다. 키는 `.env`의 `BRAVE_API_KEY`에만 두고, `.mcp.json`에는 환경변수 참조만 저장합니다. 패키지는 검증한 2.1.0으로 고정하고 일반 웹과 뉴스 검색 도구만 exact allowlist로 노출합니다.
+
+```bash
+# .env에 BRAVE_API_KEY를 설정한 뒤 등록합니다.
+uv run omni-iot-mcp add-stdio brave-search \
+  --command "$(command -v npx)" \
+  --arg=-y \
+  --arg=@brave/brave-search-mcp-server@2.1.0 \
+  --env 'BRAVE_API_KEY=${BRAVE_API_KEY}' \
+  --allow-tool brave_web_search \
+  --allow-tool brave_news_search
+
+uv run omni-iot-mcp doctor --json
+uv run omni-iot
+```
+
+`doctor` 결과에서 `brave-search`가 `healthy`, `tool_count` 2인지 확인합니다. 검색은 호출당 기본 5건으로 제한하고 `extra_snippets`와 요약 생성을 끄며, 근거가 부족하면 검색어나 관점을 바꿔 작은 추가 검색을 수행합니다. 상한은 `MCP_BRAVE_SEARCH_MAX_RESULTS`로 조정할 수 있지만 단순히 결과를 늘리기 위해 높이지 않습니다. 정책의 배경과 trade-off는 [ADR 0002](docs/adr/0002-progressive-web-search.md)에 기록했습니다.
+
+그 다음 최신 정보가 필요한 일반 질문과 최신 뉴스 질문을 각각 한 번씩 질문하고, `.runtime/<turn-id>/tool-trace.json`에 `brave_web_search`와 `brave_news_search`가 각각 성공으로 기록되는지 확인합니다. 이 서버는 외부 검색과 API 과금을 발생시킬 수 있으므로 이미지·영상·지역·요약 도구는 필요할 때만 별도로 allowlist에 추가합니다.
+
 그 밖의 관리 명령은 다음과 같습니다.
 
 ```bash

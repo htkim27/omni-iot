@@ -13,7 +13,24 @@ from omni_iot.mcp_cli import _parser, _run
 from omni_iot.mcp_config import McpConfigError, expand_env, load_mcp_config
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 class McpConfigTest(unittest.TestCase):
+    def test_example_brave_server_is_disabled_and_exactly_allowlisted(self) -> None:
+        with patch.dict(os.environ, {"BRAVE_API_KEY": "test-only"}):
+            server = load_mcp_config(PROJECT_ROOT / ".mcp.example.json").servers[
+                "brave-search"
+            ]
+            self.assertEqual(server.resolved_env(), {"BRAVE_API_KEY": "test-only"})
+
+        self.assertFalse(server.enabled)
+        self.assertEqual(
+            server.allowed_tools,
+            ("brave_web_search", "brave_news_search"),
+        )
+        self.assertEqual(server.env, {"BRAVE_API_KEY": "${BRAVE_API_KEY}"})
+
     def test_loads_stdio_http_allowlists_and_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / ".mcp.json"

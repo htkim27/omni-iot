@@ -14,6 +14,16 @@
       ],
       "timeoutSeconds": 30
     },
+    "brave-search": {
+      "command": "/absolute/path/to/npx",
+      "args": ["-y", "@brave/brave-search-mcp-server@2.1.0"],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      },
+      "enabled": false,
+      "allowedTools": ["brave_web_search", "brave_news_search"],
+      "timeoutSeconds": 30
+    },
     "remote-example": {
       "url": "http://127.0.0.1:8765/mcp",
       "headers": {

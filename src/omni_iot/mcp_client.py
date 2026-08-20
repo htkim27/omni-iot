@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -22,6 +23,10 @@ from .mcp_config import McpConfigError, McpServerConfig, load_mcp_config
 
 OPENAI_TOOL_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]")
 OPENAI_TOOL_NAME_MAX_LENGTH = 64
+COMPACT_SEARCH_OPTIONS: dict[str, tuple[str, ...]] = {
+    "brave_web_search": ("extra_snippets", "summary"),
+    "brave_news_search": ("extra_snippets",),
+}
 
 
 @dataclass(frozen=True)
@@ -67,10 +72,12 @@ class McpManager:
         config_path: Path,
         catalog_max_chars: int = 12_000,
         result_max_chars: int = 12_000,
+        brave_search_max_results: int = 5,
     ) -> None:
         self.config_path = config_path
         self.catalog_max_chars = catalog_max_chars
         self.result_max_chars = result_max_chars
+        self.brave_search_max_results = brave_search_max_results
         self._servers: dict[str, _ServerRuntime] = {}
         self._bindings: dict[str, McpToolBinding] = {}
         self._reverse_bindings: dict[tuple[str, str], str] = {}
@@ -161,9 +168,14 @@ class McpManager:
             return self._error_result(binding, "MCP server is unavailable.", started_at)
 
         try:
-            result = await runtime.client.call_tool(
+            bounded_arguments = _compact_search_arguments(
                 binding.tool_name,
                 arguments,
+                self.brave_search_max_results,
+            )
+            result = await runtime.client.call_tool(
+                binding.tool_name,
+                bounded_arguments,
                 read_timeout_seconds=runtime.config.timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001 - transport errors become model-visible results
@@ -298,12 +310,23 @@ class McpManager:
                     self._reverse_bindings = {}
                     self._catalog = []
                     return
+                description = tool.description or tool.name
+                if tool.name in COMPACT_SEARCH_OPTIONS:
+                    description += (
+                        f" Start with at most {self.brave_search_max_results} results. "
+                        "If evidence is insufficient, search again with a meaningfully "
+                        "different query instead of requesting one large result set."
+                    )
                 definition: dict[str, object] = {
                     "type": "function",
                     "function": {
                         "name": model_name,
-                        "description": tool.description or tool.name,
-                        "parameters": tool.input_schema,
+                        "description": description,
+                        "parameters": _compact_search_schema(
+                            tool.name,
+                            tool.input_schema,
+                            self.brave_search_max_results,
+                        ),
                     },
                 }
                 binding = McpToolBinding(
@@ -373,6 +396,46 @@ def _resolve_executable(command: str) -> str:
     if resolved_command is None:
         raise McpConfigError(f"MCP executable is not on PATH: {command}.")
     return resolved_command
+
+
+def _compact_search_arguments(
+    tool_name: str,
+    arguments: dict[str, object],
+    maximum: int,
+) -> dict[str, object]:
+    if tool_name not in COMPACT_SEARCH_OPTIONS:
+        return arguments
+    bounded = dict(arguments)
+    requested = bounded.get("count")
+    if requested is None:
+        bounded["count"] = maximum
+    elif isinstance(requested, int) and not isinstance(requested, bool):
+        bounded["count"] = min(requested, maximum)
+    for option in COMPACT_SEARCH_OPTIONS[tool_name]:
+        bounded[option] = False
+    return bounded
+
+
+def _compact_search_schema(
+    tool_name: str,
+    input_schema: dict[str, object],
+    maximum: int,
+) -> dict[str, object]:
+    if tool_name not in COMPACT_SEARCH_OPTIONS:
+        return input_schema
+    schema = copy.deepcopy(input_schema)
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        count = properties.get("count")
+        if isinstance(count, dict):
+            count["maximum"] = maximum
+            count["default"] = maximum
+        for option in COMPACT_SEARCH_OPTIONS[tool_name]:
+            value = properties.get(option)
+            if isinstance(value, dict):
+                value["default"] = False
+                value["const"] = False
+    return schema
 
 
 def _model_tool_name(server_name: str, tool_name: str) -> str:

@@ -223,6 +223,9 @@ uv run omni-iot-tts \
 - [x] SwitchBot 공식 CLI 인증 및 `switchbot mcp serve` stdio 연결
 - [x] `doctor`에서 SwitchBot 연결 `healthy`와 허용 도구 5개 확인 (2026-08-19)
 - [x] MCP 제어 대상으로 에어컨·선풍기 연결
+- [x] 공식 Brave Search MCP 2.1.0 등록 예시와 웹·뉴스 exact allowlist
+- [x] 검색당 5건 상한과 다른 질의로 보완하는 progressive retrieval 정책
+- [ ] Brave API 키로 `doctor` healthy 및 웹·뉴스 실제 질의 smoke test
 - [ ] 실제 Qwen 음성으로 에어컨·선풍기 반복 제어 acceptance
 - [x] SwitchBot 물리 스위치 하드웨어·앱 연결
 - [ ] SwitchBot 물리 스위치의 Hub/OpenAPI discovery 및 조명 on/off acceptance
@@ -351,6 +354,9 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 - [ ] 실제 Qwen 음성 tool smoke test
 - [x] 공식 SwitchBot CLI 설치·인증 및 5개 도구 discovery
 - [x] 에어컨·선풍기를 실제 MCP 제어 대상으로 연결
+- [x] 공식 Brave Search MCP를 웹·뉴스 2개 도구로 최소 등록
+- [x] Brave 검색 결과 상한·compact option·추가 질의 정책을 하네스와 ADR에 적용
+- [ ] Brave Search `doctor` healthy와 웹·뉴스 실제 질의
 - [ ] 에어컨·선풍기의 실제 Qwen 음성 반복 제어 및 오류 acceptance
 - [x] SwitchBot 물리 스위치 하드웨어·앱 연결
 - [ ] SwitchBot 물리 스위치의 Hub/OpenAPI discovery와 조명 켜기·끄기 acceptance

@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from .config import PROJECT_ROOT
+from .config import PROJECT_ROOT, Settings
 from .mcp_client import McpManager
 from .mcp_config import (
     McpConfig,
@@ -135,7 +135,10 @@ def _run(args: argparse.Namespace, path: Path) -> int:
 
 
 async def _doctor(path: Path, as_json: bool) -> int:
-    manager = McpManager(path)
+    manager = McpManager(
+        path,
+        brave_search_max_results=Settings().mcp_brave_search_max_results,
+    )
     await manager.start()
     try:
         health = manager.health()
