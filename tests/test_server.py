@@ -8,8 +8,17 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
+from omni_iot.observability import NoopObservability
 from omni_iot.pipeline import TurnResult
-from omni_iot.server import _int_header, app, client_config, settings as server_settings
+from omni_iot.server import (
+    _int_header,
+    app,
+    client_config,
+    health,
+)
+from omni_iot.server import (
+    settings as server_settings,
+)
 from omni_iot.wakeword import WakeDetection
 
 
@@ -47,6 +56,14 @@ class ClientConfigTest(unittest.TestCase):
             _int_header(request, "x-tts-num-steps", 4, 64)
 
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_health_exposes_non_secret_observability_state(self) -> None:
+        with patch("omni_iot.server.ai_observability", NoopObservability()):
+            payload = json.loads(health().body)
+
+        self.assertEqual(payload["observability"]["backend"], "none")
+        self.assertFalse(payload["observability"]["enabled"])
+        self.assertNotIn("secret_key", payload["observability"])
 
 
 class FakeDetector:

@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from unittest.mock import patch
 
 from omni_iot.config import Settings
 from omni_iot.mcp_client import McpCallResult
 from omni_iot.omni_agent import OmniAgent
 from omni_iot.omni_llama import ChatCompletion, ToolCall
-
 
 TOOLS = [
     {
@@ -25,7 +25,9 @@ TOOLS = [
 ]
 
 
-async def _direct_to_thread(function: Callable[..., Any], *args: object, **kwargs: object) -> Any:
+async def _direct_to_thread(
+    function: Callable[..., Any], *args: object, **kwargs: object
+) -> Any:
     return function(*args, **kwargs)
 
 
@@ -79,7 +81,9 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.to_thread.stop()
 
-    async def test_executes_multiple_calls_in_order_and_returns_final_json(self) -> None:
+    async def test_executes_multiple_calls_in_order_and_returns_final_json(
+        self,
+    ) -> None:
         calls = (
             ToolCall("one", "switchbot__send_command", '{"command":"turnOn"}'),
             ToolCall("two", "switchbot__send_command", '{"command":"turnOff"}'),
@@ -113,7 +117,9 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_messages[-2]["tool_call_id"], "one")
         self.assertEqual(second_messages[-1]["tool_call_id"], "two")
 
-    async def test_invalid_arguments_are_model_visible_without_calling_mcp(self) -> None:
+    async def test_invalid_arguments_are_model_visible_without_calling_mcp(
+        self,
+    ) -> None:
         llama = _FakeLlama(
             [
                 ChatCompletion(
@@ -122,8 +128,7 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 ChatCompletion(
                     content=(
-                        '{"transcript":null,'
-                        '"response":"명령 형식이 잘못됐습니다."}'
+                        '{"transcript":null,"response":"명령 형식이 잘못됐습니다."}'
                     )
                 ),
             ]
@@ -133,25 +138,34 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
             audio = Path(temp_dir) / "input.wav"
             audio.write_bytes(b"wav")
             generation = await OmniAgent(
-                llama, mcp, Settings(runtime_dir=Path(temp_dir))  # type: ignore[arg-type]
+                llama,
+                mcp,
+                Settings(runtime_dir=Path(temp_dir)),  # type: ignore[arg-type]
             ).generate(audio, [])
 
         self.assertEqual(mcp.calls, [])
         self.assertIn("잘못", json.loads(generation.output)["text"])
+        self.assertTrue(generation.tool_attempted)
+        self.assertFalse(generation.tool_succeeded)
         tool_message = llama.chat_requests[1][0][-1]
         self.assertTrue(json.loads(tool_message["content"])["isError"])
 
-    async def test_no_catalog_preserves_direct_generation_path(self) -> None:
-        llama = _FakeLlama([])
+    async def test_no_catalog_uses_tool_free_chat_path(self) -> None:
+        llama = _FakeLlama(
+            [ChatCompletion(content='{"transcript":"안녕","response":"반가워요."}')]
+        )
         mcp = _FakeMcp(tools=[])
         with tempfile.TemporaryDirectory() as temp_dir:
             audio = Path(temp_dir) / "input.wav"
             audio.write_bytes(b"wav")
             result = await OmniAgent(
-                llama, mcp, Settings(runtime_dir=Path(temp_dir))  # type: ignore[arg-type]
+                llama,
+                mcp,
+                Settings(runtime_dir=Path(temp_dir)),  # type: ignore[arg-type]
             ).generate(audio, [])
 
-        self.assertEqual(llama.generate_calls, 1)
+        self.assertEqual(llama.generate_calls, 0)
+        self.assertIsNone(llama.chat_requests[0][1])
         self.assertEqual(json.loads(result.output)["text"], "반가워요.")
 
     async def test_round_limit_forces_a_tool_free_final_request(self) -> None:
@@ -159,9 +173,7 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
             [
                 ChatCompletion(
                     content=None,
-                    tool_calls=(
-                        ToolCall("one", "switchbot__send_command", "{}"),
-                    ),
+                    tool_calls=(ToolCall("one", "switchbot__send_command", "{}"),),
                 ),
                 ChatCompletion(
                     content='{"transcript":"불 켜줘","response":"현재 결과를 요약했습니다."}'
@@ -183,6 +195,7 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(llama.chat_requests[-1][1])
         self.assertIn("요약", json.loads(result.output)["text"])
+        self.assertTrue(result.tool_loop_limit_hit)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@
 - 사용자 발화 transcript와 최근 대화 history를 다음 OMNI 턴에 전달하는 멀티턴 구현
 - `llama-server`와 OmniVoice 모델을 서버 수명 동안 유지해 턴별 모델 재로딩 제거
 - 공식 MCP Python SDK 기반 stdio/Streamable HTTP 클라이언트와 Qwen tool loop 구현
+- MCP를 통한 에어컨·선풍기 조회 및 제어 연결 완료
+- 평가 모드에서 Langfuse 기반 OMNI/MCP/transcript trace와 기초 score 기록
 - allowlist 기반 도구 노출, 로컬 설정 CLI, health/doctor 진단 구현
 - 파일 단위의 실제 `OMNI → TTS` 전체 파이프라인 검증 완료
 - CUDA 13.1/Blackwell 빌드에서 RTX 5070 Ti partial GPU 오프로딩 검증 완료
@@ -151,6 +153,51 @@ uv run omni-iot-mcp enable switchbot
 uv run omni-iot-mcp remove switchbot
 ```
 
+## 로컬 AI 관측과 평가
+
+Langfuse 기록은 기본적으로 꺼져 있습니다. `AI_EVAL_ENABLED=true`일 때만 입력 WAV, 모델의 실제 메시지와 raw 응답, transcript 파싱 상태, MCP 입출력, TTS timing을 로컬 Langfuse에 전송합니다. 같은 conversation의 턴은 Langfuse session으로 묶이며 인증정보 계열 필드는 전송 전에 마스킹됩니다.
+
+먼저 self-host 콘솔용 비밀값을 준비합니다.
+
+```bash
+cp infra/langfuse/.env.example infra/langfuse/.env
+# infra/langfuse/.env의 모든 CHANGEME 값을 교체합니다.
+docker compose --env-file infra/langfuse/.env \
+  -f infra/langfuse/compose.yaml up -d
+```
+
+루트 `.env`에는 같은 project key를 설정합니다.
+
+```dotenv
+AI_EVAL_ENABLED=true
+LANGFUSE_BASE_URL=http://127.0.0.1:3000
+LANGFUSE_PUBLIC_KEY=lf_pk_...
+LANGFUSE_SECRET_KEY=lf_sk_...
+LANGFUSE_TRACING_ENVIRONMENT=local-eval
+```
+
+연결을 확인하고 수동 평가용 score config와 annotation queue를 한 번 생성합니다.
+
+```bash
+uv run omni-iot-eval doctor
+uv run omni-iot-eval setup
+uv run omni-iot
+```
+
+콘솔은 <http://127.0.0.1:3000>에서 확인합니다. `voice-transcript-review` queue에는 `transcript_accuracy`, `transcript_correction`, `response_quality` 항목이 생성됩니다. 자동 score는 `turn_succeeded`, `structured_output_valid`, `transcript_present`, `tool_calls_succeeded`, `tool_loop_limit_hit`입니다.
+
+도구 사용 정확성, latency budget, regression dataset과 프로토타입 capability gate는 [AI 관측·평가 기준](docs/evaluation.md)에 정의합니다. 이 기준은 `M3 — AI Observability & Evaluation Foundation`의 완료 조건으로 사용합니다.
+
+Langfuse의 PostgreSQL, ClickHouse, MinIO, Redis는 Docker named volume에 무기한 보존됩니다. 일반 `docker compose down`은 데이터를 유지하지만 `docker compose down -v`는 trace와 입력 음성을 복구 불가능하게 삭제하므로 사용하지 않습니다. 용량은 다음 명령으로 확인할 수 있습니다.
+
+```bash
+docker system df -v
+docker compose --env-file infra/langfuse/.env \
+  -f infra/langfuse/compose.yaml ps
+```
+
+평가가 끝나면 루트 `.env`의 `AI_EVAL_ENABLED=false`로 되돌리고 앱을 재시작하면 이후 턴에는 관측 비용이나 네트워크 요청이 발생하지 않습니다.
+
 Threshold, 발화 종료 대기, 응답 토큰 상한, TTS 단계는 UI에서 즉시 변경할 수 있으며 브라우저별 `localStorage`에 저장됩니다. 이 저장값은 이후 접속에서도 `.env` 기본값보다 우선합니다. 긴 문장이 중간에 잘리면 UI의 발화 종료 대기를 1200~1500ms로 늘리고, 14초 제한 자체를 늘리려면 `VAD_MAX_TURN_MS`를 수정한 뒤 서버를 재시작합니다.
 
 ### RTX 5070 Ti용 llama.cpp 빌드
@@ -203,6 +250,7 @@ uv run omni-iot-tts \
 ```text
 .
 ├── docs/plan.md                 # 세부 진행 상황과 단계별 계획
+├── docs/evaluation.md           # AI 관측·평가 지표와 capability gate
 ├── docs/adr/                    # 장기 설계 결정 기록
 ├── models/                      # 로컬 GGUF 모델
 ├── src/omni_iot/
@@ -211,6 +259,8 @@ uv run omni-iot-tts \
 │   ├── mcp_config.py            # 로컬 MCP 설정과 비밀값 치환
 │   ├── mcp_client.py            # MCP 연결, catalog와 tool 실행
 │   ├── mcp_cli.py               # MCP 등록·진단 CLI
+│   ├── eval_cli.py              # Langfuse 진단·평가 리소스 초기화 CLI
+│   ├── observability.py         # no-op/Langfuse AI 관측 wrapper
 │   ├── omni_agent.py            # Qwen ↔ MCP tool loop
 │   ├── omni_llama.py            # llama.cpp OMNI wrapper
 │   ├── pipeline.py              # OMNI → TTS 파이프라인

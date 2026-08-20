@@ -24,12 +24,14 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .conversation import ConversationSession, ConversationStore
 from .mcp_client import McpManager
+from .observability import create_observability
 from .omni_agent import OmniAgent
 from .omni_llama import LlamaServer
 from .pipeline import TurnResult, run_demo_pipeline, run_turn_pipeline
 from .wakeword import SAMPLE_RATE, WakeWordDetector
 
 settings = get_settings()
+ai_observability = create_observability(settings)
 omni_service = LlamaServer(settings) if settings.omni_backend == "server" else None
 mcp_service = McpManager(
     settings.mcp_config,
@@ -38,7 +40,9 @@ mcp_service = McpManager(
     brave_search_max_results=settings.mcp_brave_search_max_results,
 )
 omni_agent = (
-    OmniAgent(omni_service, mcp_service, settings) if omni_service is not None else None
+    OmniAgent(omni_service, mcp_service, settings, ai_observability)
+    if omni_service is not None
+    else None
 )
 
 
@@ -46,6 +50,12 @@ omni_agent = (
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     tts_loaded = False
     try:
+        if ai_observability.enabled:
+            authenticated = await asyncio.to_thread(ai_observability.authenticate)
+            if not authenticated:
+                raise RuntimeError(
+                    "AI evaluation mode is enabled but Langfuse authentication failed."
+                )
         if omni_service:
             await asyncio.to_thread(omni_service.start)
         await mcp_service.start()
@@ -72,6 +82,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             clear_model_cache()
         if omni_service:
             await asyncio.to_thread(omni_service.stop)
+        await asyncio.to_thread(ai_observability.shutdown)
 
 
 app = FastAPI(title="omni-iot demo", lifespan=lifespan)
@@ -100,17 +111,18 @@ async def demo(request: Request) -> JSONResponse:
             omni_agent,
             max_tokens,
             tts_num_steps,
+            ai_observability,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     audio_url = None
     if result.audio_path:
-        audio_url = f"/api/audio/{result.audio_path.parent.name}/{result.audio_path.name}"
+        audio_url = (
+            f"/api/audio/{result.audio_path.parent.name}/{result.audio_path.name}"
+        )
 
-    return JSONResponse(
-        _turn_payload(result, audio_url=audio_url)
-    )
+    return JSONResponse(_turn_payload(result, audio_url=audio_url))
 
 
 @app.post("/api/turn")
@@ -133,13 +145,16 @@ async def turn(
             omni_agent,
             max_tokens,
             tts_num_steps,
+            ai_observability,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     audio_url = None
     if result.audio_path:
-        audio_url = f"/api/audio/{result.audio_path.parent.name}/{result.audio_path.name}"
+        audio_url = (
+            f"/api/audio/{result.audio_path.parent.name}/{result.audio_path.name}"
+        )
 
     payload = _turn_payload(result, audio_url=audio_url)
     payload["session_id"] = session.id
@@ -326,6 +341,7 @@ async def _finish_websocket_turn(
             omni_agent,
             max_tokens,
             tts_num_steps,
+            ai_observability,
         )
     except Exception as exc:  # noqa: BLE001 - surface pipeline failures to the client
         await websocket.send_json({"type": "error", "message": str(exc)})
@@ -334,7 +350,9 @@ async def _finish_websocket_turn(
 
     audio_url = None
     if result.audio_path:
-        audio_url = f"/api/audio/{result.audio_path.parent.name}/{result.audio_path.name}"
+        audio_url = (
+            f"/api/audio/{result.audio_path.parent.name}/{result.audio_path.name}"
+        )
     payload = _turn_payload(result, audio_url=audio_url)
     payload.update(
         {
@@ -374,7 +392,9 @@ def _optional_bounded_int(value: object, minimum: int, maximum: int) -> int | No
 
 
 @app.post("/api/session/reset")
-async def reset_session(x_session_id: str | None = Header(default=None)) -> JSONResponse:
+async def reset_session(
+    x_session_id: str | None = Header(default=None),
+) -> JSONResponse:
     session = conversations.reset(x_session_id)
     return JSONResponse({"session_id": session.id, "transcript": []})
 
@@ -389,8 +409,10 @@ def health() -> JSONResponse:
                 omni_service.ready if omni_service else bool(settings.omni_command)
             ),
             "tts_backend": settings.tts_backend,
-            "tts_configured": settings.tts_backend == "omnivoice" or bool(settings.tts_command),
+            "tts_configured": settings.tts_backend == "omnivoice"
+            or bool(settings.tts_command),
             "mcp": mcp_service.health(),
+            "observability": ai_observability.health(),
         }
     )
 
@@ -481,7 +503,9 @@ def main() -> None:
     parser.add_argument("--port", default=8000, type=int)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
-    uvicorn.run("omni_iot.server:app", host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run(
+        "omni_iot.server:app", host=args.host, port=args.port, reload=args.reload
+    )
 
 
 if __name__ == "__main__":

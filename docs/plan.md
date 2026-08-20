@@ -49,6 +49,7 @@ MCP 도구 호출 하네스와 SwitchBot MCP 연결을 구현했고, 실제 에�
 | `omni-iot-tts` | 텍스트를 OmniVoice WAV로 합성 |
 | `omni-iot-wakeword-models` | 공식 openWakeWord 모델 준비 |
 | `omni-iot-mcp` | MCP stdio/HTTP 서버 등록, allowlist 관리와 진단 |
+| `omni-iot-eval` | Langfuse 연결 진단과 score/annotation queue 초기화 |
 
 ### 2.2 브라우저 음성 하네스
 
@@ -94,13 +95,15 @@ UI에서 threshold, 발화 종료 대기, 응답 토큰 상한, TTS 생성 단�
 
 현재 conversation store는 프로세스 메모리에만 존재해 서버 재시작 시 기록이 사라집니다. 같은 세션의 최근 사용자 transcript와 assistant 응답은 다음 OMNI 추론 context에 전달됩니다.
 
+`AI_EVAL_ENABLED=true`인 로컬 평가 실행에서는 각 턴을 Langfuse trace로 기록합니다. 입력 WAV와 generation round, transcript parser, MCP tool, TTS를 중첩 observation으로 남기고 conversation ID를 Langfuse session ID로 사용합니다. 구조화 출력·transcript 존재·tool 성공 여부는 trace score로 기록하며, 기본 실행에서는 Langfuse client 자체를 만들지 않습니다. self-host 데이터는 named volume에 무기한 유지합니다.
+
 `.runtime` 정리는 서버 시작 및 새 턴 생성 시 실행됩니다. 기본 보존 개수는 `RUNTIME_TURN_LIMIT=20`이며, 자동 생성된 32자리 UUID 디렉터리만 대상으로 하므로 smoke test WAV나 사용자가 만든 다른 경로는 삭제하지 않습니다.
 
 현재 API:
 
 | Method | 경로 | 역할 |
 | --- | --- | --- |
-| `GET` | `/api/health` | OMNI/TTS 설정 여부 확인 |
+| `GET` | `/api/health` | OMNI/TTS/MCP/AI 관측 설정 상태 확인 |
 | `GET` | `/api/config` | UI용 VAD/생성 기본값 확인 |
 | `WS` | `/ws/audio` | 호출어 감지와 대화 턴용 실시간 PCM/event 스트림 |
 | `POST` | `/api/turn` | 세션 기반 WAV 턴 처리 |
@@ -231,6 +234,22 @@ uv run omni-iot-tts \
 - [ ] SwitchBot 물리 스위치의 Hub/OpenAPI discovery 및 조명 on/off acceptance
 
 실제 API 키, 인증 토큰과 로컬 실행 파일 경로는 milestone 문서나 git 추적 파일에 기록하지 않습니다. `.env`와 `.mcp.json`은 모두 gitignore 대상입니다.
+
+### 2.7 AI 관측과 평가
+
+대표 milestone은 `M3 — AI Observability & Evaluation Foundation`입니다.
+
+- [x] 평가 모드 opt-in과 완전한 no-op 기본 경로
+- [x] 로컬 Langfuse self-host 구성과 입력 WAV 보관
+- [x] conversation session과 턴별 root/child observation
+- [x] transcript parser 상태, MCP 입출력, TTS와 오류 trace
+- [x] transcript 수동 annotation queue와 기초 boolean score
+- [ ] 도구 사용 정확성 score와 case matrix
+- [ ] no-tool/single-tool latency p50·p95 기준선
+- [ ] corrected transcript 및 fixture MCP 기반 regression dataset
+- [ ] 프로토타입 capability별 acceptance 결과
+
+세부 metric, 목표값과 완료 조건은 [evaluation.md](evaluation.md)에 고정합니다. 이 PR은 관측 인프라와 수동 평가 기반을 제공하며, 자동 dataset runner와 운영 alerting은 후속 M3 작업으로 분리합니다.
 
 ## 3. 설정 및 command hook
 
@@ -380,6 +399,12 @@ v1은 tools만 연결하며 resources, prompts, sampling, elicitation, tasks와 
 
 이 단계의 완료 기준은 방1과 거실 양쪽에서 음성 명령을 시작할 수 있고, 각 응답이 의도한 위치에서 재생되며, 한 입력의 wake/VAD/session 상태가 다른 입력을 오염시키지 않는 것입니다. Android bridge, MQTT, 범용 멀티룸 장치 등록 UI는 필요한 경우 후속 단계에서 다룹니다.
 
+### Cross-cutting M3 — AI 관측과 평가
+
+상태: 관측 인프라 구현, 평가 기준선과 regression 구축 진행 예정
+
+M3는 특정 기능 phase가 아니라 Phase 4의 도구 제어와 Phase 5의 멀티룸 capability를 같은 기준으로 검증하는 횡단 milestone입니다. 도구 사용, latency, regression과 capability gate는 [AI 관측·평가 기준](evaluation.md)을 따릅니다.
+
 ## 6. 우선순위
 
 다음 순서로 진행합니다.
@@ -403,4 +428,13 @@ v1은 tools만 연결하며 resources, prompts, sampling, elicitation, tasks와 
 - 모델/명령 오류가 UI와 로그에 진단 가능한 형태로 노출
 - 핵심 pipeline과 API에 자동화된 회귀 테스트 존재
 
-MCP 하네스 완료 조건에는 자동화 테스트 전체 통과와 함께 실제 Qwen 음성 fixture 및 SwitchBot 계정/장치 smoke test가 포함됩니다. 후자는 Node.js 18+, `@switchbot/openapi-cli`, 사용자 인증과 실제 비위험 장치가 준비된 목표 장비에서 수행합니다.
+현재 프로토타입은 아래 조건을 모두 만족하면 완료로 봅니다.
+
+- 방1에서 기존 로컬 음성 대화와 에어컨·선풍기 MCP 제어가 반복 동작
+- SwitchBot 물리 스위치를 통해 조명을 음성으로 켜고 끌 수 있음
+- 거실 Bluetooth 스피커에서 응답 음성을 재생할 수 있음
+- 방1과 거실의 입력을 구분해 받을 수 있고 wake/VAD/session 상태가 서로 섞이지 않음
+- 명령을 받은 위치에 맞게 응답 출력 위치를 선택할 수 있음
+- 장치·MCP·오디오 연결 오류를 로그와 Langfuse trace에서 추적할 수 있음
+
+MCP 및 실제 장치 acceptance는 Node.js 18+, `@switchbot/openapi-cli`, 사용자 인증과 대상 장치가 준비된 환경에서 수행합니다. 범용 멀티룸 플랫폼, Android 전용 앱, 운영 수준의 저장 용량·장애 대응은 프로토타입 이후 작업으로 분리합니다.
