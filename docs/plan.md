@@ -55,7 +55,7 @@ MCP 도구 호출 하네스와 SwitchBot MCP 연결을 구현했고, 실제 에�
 - [x] 브라우저 마이크 권한 및 mono 입력 수집
 - [x] 입력을 16kHz mono Int16 PCM으로 실시간 리샘플링
 - [x] `/ws/audio` WebSocket을 통한 연속 PCM 전송
-- [x] 서버의 openWakeWord `Hey Jarvis` 감지 및 wake event 전달
+- [x] 서버의 openWakeWord `오둥아` 감지 및 wake event 전달
 - [x] 호출어 종료 후 별도 명령 음성을 기다리는 command-wait 단계
 - [x] sleep/recording/processing/speaking/follow-up 상태 전이
 - [x] RMS threshold 기반 VAD
@@ -273,7 +273,7 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 - [x] OmniVoice 단독 smoke WAV 생성
 - [x] 실제 OMNI 텍스트로 TTS WAV 생성
 - [x] `/api/turn`에서 재생 가능한 `audio_url` 반환
-- [x] `Hey Jarvis → 명령 대기 → 응답 → follow-up → sleep` 반복 흐름
+- [x] `오둥아 → 명령 대기 → 응답 → follow-up → sleep` 반복 흐름
 - [x] system 지시와 user 오디오 분리
 - [x] MCP 설정/CLI/allowlist 회귀 테스트
 - [x] MCP pagination, structured/text/error 결과와 catalog 상한 테스트
@@ -284,7 +284,7 @@ TTS_COMMAND=/path/to/tts --text-file {text_file} --output {output}
 
 남은 end-to-end 검증:
 
-- [ ] 다양한 거리·억양에서 `Hey Jarvis` false reject/accept 측정
+- [ ] 다양한 거리·억양에서 `오둥아` false reject/accept 측정
 - [ ] echo와 배경 소음 환경의 VAD 보정
 - [ ] 긴 발화의 무음 종료 및 최대 턴 설정 검증
 - [ ] 응답 도중 barge-in 장시간 반복
@@ -357,7 +357,7 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 - [x] 에어컨·선풍기를 실제 MCP 제어 대상으로 연결
 - [x] 공식 Brave Search MCP를 웹·뉴스 2개 도구로 최소 등록
 - [x] Brave 검색 결과 상한·compact option·추가 질의 정책을 하네스와 ADR에 적용
-- [ ] Brave Search `doctor` healthy와 웹·뉴스 실제 질의
+- [x] Brave Search `doctor` healthy와 웹·뉴스 실제 질의
 - [ ] 에어컨·선풍기의 실제 Qwen 음성 반복 제어 및 오류 acceptance
 - [x] SwitchBot 물리 스위치 하드웨어·앱 연결
 - [ ] SwitchBot 물리 스위치의 Hub/OpenAPI discovery와 조명 켜기·끄기 acceptance
@@ -380,15 +380,41 @@ v1은 tools만 연결하며 resources, prompts, sampling, elicitation, tasks와 
 
 이 단계의 완료 기준은 방1과 거실 양쪽에서 음성 명령을 시작할 수 있고, 각 응답이 의도한 위치에서 재생되며, 한 입력의 wake/VAD/session 상태가 다른 입력을 오염시키지 않는 것입니다. Android bridge, MQTT, 범용 멀티룸 장치 등록 UI는 필요한 경우 후속 단계에서 다룹니다.
 
+### Phase 6 — 멀티턴 도구 사용 신뢰성
+
+대표 milestone은 [`M5 — Reliable Multi-Turn Tool Use`](https://github.com/htkim27/omni-iot/milestone/5)입니다.
+
+상태: Qwen3-Omni가 대화 3턴 이상부터 도구 선택 또는 인자 생성 능력을 잃는 현상 관찰, 재현 조건과 기준선 수립 대기
+
+- [ ] 동일한 장치·검색 시나리오를 1턴, 3턴, 5턴 이상으로 반복하는 평가 fixture 구성
+- [ ] 턴 깊이별 tool selection, argument validity, 실행 성공률과 잘못된 actuation 측정
+- [ ] 대화 history, tool result, catalog 크기와 system prompt가 성능에 미치는 영향 분리
+- [ ] context 정리 또는 tool reminder 전략을 적용하고 일반 대화 품질 회귀 여부 확인
+- [ ] 3턴을 넘는 실제 음성 대화에서도 도구 discovery → 실행 → 오류 복구를 안정적으로 검증
+
+### Phase 7 — 자연스러운 음성 대화 latency
+
+대표 milestone은 [`M6 — Natural Voice Conversation Latency`](https://github.com/htkim27/omni-iot/milestone/6)입니다.
+
+상태: 현재 end-to-end 약 3~7초로 자연스러운 음성 대화 UX에 부족, 단계별 계측과 목표 예산 수립 대기
+
+- [ ] cold/warm 조건을 분리해 VAD 종료부터 첫 응답 오디오 재생까지 p50/p95 측정
+- [ ] OMNI prompt processing·generation, MCP, TTS와 전송 시간을 동일 trace에서 분해
+- [ ] 모델·GPU offload·context·응답 길이·TTS step별 정확도와 latency trade-off 측정
+- [ ] streaming 또는 선행 TTS 등 첫 오디오 재생 시간을 줄이는 경로 검증
+- [ ] 정확도와 IoT 안전성을 유지하면서 목표 장비에서 자연스러운 체감 응답성 확인
+
 ## 6. 우선순위
 
 다음 순서로 진행합니다.
 
 1. 에어컨·선풍기의 실제 Qwen 음성 반복 제어와 오류 acceptance
-2. SwitchBot 물리 스위치의 MCP 노출 및 조명 켜기·끄기 검증
-3. 거실 Bluetooth 스피커 출력 연결
-4. 거실 입력 장치 선정과 방1·거실 다중 입력 처리
-5. 입력 source/room별 세션 격리와 응답 출력 routing 검증
+2. 3턴 이상 대화에서 Qwen3-Omni 도구 사용 저하 재현 및 기준선 측정
+3. 현재 3~7초 end-to-end latency의 단계별 p50/p95 측정
+4. SwitchBot 물리 스위치의 MCP 노출 및 조명 켜기·끄기 검증
+5. 거실 Bluetooth 스피커 출력 연결
+6. 거실 입력 장치 선정과 방1·거실 다중 입력 처리
+7. 입력 source/room별 세션 격리와 응답 출력 routing 검증
 
 호출어/VAD 보정, AudioWorklet 전환, latency 최적화와 transcript 품질 개선은 위 작업과 병행하되 프로토타입 범위를 확장하지 않습니다.
 

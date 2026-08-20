@@ -10,7 +10,7 @@
 
 현재는 방1의 음성 입출력 장치에서 로컬 음성 대화와 실제 IoT 제어가 동작하는 end-to-end 프로토타입을 구현한 상태입니다. MCP를 통해 에어컨과 선풍기까지 연결했으며, 조명 스위치와 거실 음성 장치를 더하면 현재 프로토타입 범위가 완성됩니다.
 
-- 브라우저 마이크 입력, `Hey Jarvis` 로컬 호출어, WebSocket PCM 스트리밍 및 응답 재생 구현
+- 브라우저 마이크 입력, `오둥아` 로컬 호출어, WebSocket PCM 스트리밍 및 응답 재생 구현
 - `sleeping → recording → processing → speaking → follow_up` 상태 기반 연속 대화 구현
 - Qwen3-Omni와 `llama.cpp`를 이용한 음성 입력 → 텍스트 응답 연결
 - k2-fsa/OmniVoice를 이용한 텍스트 → 음성 응답 연결
@@ -31,7 +31,7 @@
 
 ```text
 마이크 / 방별 입력 장치
-  → openWakeWord `Hey Jarvis` 감지 (sleep → wake)
+  → openWakeWord `오둥아` 감지 (sleep → wake)
   → VAD 및 발화 구간 감지
   → Qwen3-Omni (llama.cpp `--jinja`, OpenAI tools)
   → allowlist된 MCP 도구 호출 (stdio / Streamable HTTP)
@@ -40,7 +40,7 @@
   → 브라우저 / 방별 스피커
 ```
 
-현재 구현은 방1의 브라우저를 입출력 장치로 사용합니다. 브라우저 입력을 16kHz 16-bit mono PCM으로 리샘플링해 `/ws/audio`로 계속 보내고, FastAPI의 경량 openWakeWord가 `Hey Jarvis`를 감지합니다. 호출어가 끝난 뒤 별도의 명령 음성이 시작될 때까지 기다리므로 호출어 자체가 하나의 질문으로 처리되지 않습니다. 발화가 끝나면 PCM을 WAV로 감싸 상시 실행 중인 `llama-server`에 전달하고, 프로세스 내 OmniVoice가 응답 음성을 생성합니다.
+현재 구현은 방1의 브라우저를 입출력 장치로 사용합니다. 브라우저 입력을 16kHz 16-bit mono PCM으로 리샘플링해 `/ws/audio`로 계속 보내고, FastAPI의 경량 openWakeWord가 `오둥아`를 감지합니다. 호출어가 끝난 뒤 별도의 명령 음성이 시작될 때까지 기다리므로 호출어 자체가 하나의 질문으로 처리되지 않습니다. 발화가 끝나면 PCM을 WAV로 감싸 상시 실행 중인 `llama-server`에 전달하고, 프로세스 내 OmniVoice가 응답 음성을 생성합니다.
 
 프로토타입의 다음 오디오 단계는 방1 장치를 유지하면서 거실에 Bluetooth 스피커 출력을 추가하고, 방1과 거실 등 둘 이상의 입력 source를 동시에 받을 수 있게 하는 것입니다. 거실 입력 장치와 transport는 장비 검증 후 확정하며, 이 단계에서는 범용 멀티룸 플랫폼보다 입력 source 식별, 세션 분리, 응답 출력 위치 선택에 집중합니다.
 
@@ -62,8 +62,8 @@
 
 ```bash
 uv sync
-# 공식 Hey Jarvis 모델 준비(최초 한 번)
-uv run omni-iot-wakeword-models
+# 프로젝트에서 학습한 오둥아 모델과 openWakeWord 보조 모델을 준비합니다.
+# 모델 파일은 git에 포함되지 않으므로 models/openwakeword/에 별도로 둡니다.
 cp .env.example .env
 uv run omni-iot --host 127.0.0.1 --port 8000
 ```
@@ -76,8 +76,8 @@ uv run omni-iot --host 127.0.0.1 --port 8000
 
 기본 사용 흐름은 다음과 같습니다.
 
-1. 화면이 `Say “Hey Jarvis”` 상태인지 확인합니다.
-2. “Hey Jarvis”라고 말하고 잠깐 멈춥니다.
+1. 화면이 `Say “오둥아”` 상태인지 확인합니다.
+2. “오둥아”라고 말하고 잠깐 멈춥니다.
 3. `Listening for command`가 표시되면 명령을 말합니다.
 4. 응답 재생 후 8초 안에는 호출어 없이 후속 질문을 이어갈 수 있습니다.
 
@@ -151,6 +151,16 @@ uv run omni-iot-mcp enable switchbot
 uv run omni-iot-mcp remove switchbot
 ```
 
+현재 저장소에서 지원하는 전체 MCP 기능을 함께 사용하려면 저장소 루트의 `run-omni-iot.sh`로 애플리케이션을 시작합니다. 현재 전체 구성은 SwitchBot의 장치 목록·상태 조회·명령 실행 3개 도구와 Brave Search의 웹·뉴스 검색 2개 도구입니다. 스크립트는 누락된 서버만 최초 등록하고 두 서버를 활성화한 뒤, `doctor`가 성공해야 애플리케이션을 시작합니다.
+
+```bash
+bash run-omni-iot.sh
+```
+
+실행 전에 SwitchBot CLI 인증과 `.env`의 `BRAVE_API_KEY` 설정을 완료해야 합니다. 아직 사용하지 않는 SwitchBot Scene과 향후 추가될 MCP 서버는 이 “전체 구성”에 자동으로 포함되지 않으며, allowlist와 실행 스크립트를 명시적으로 변경한 뒤 활성화합니다.
+
+`.runtime/`과 `models/` 디렉터리는 `.gitkeep`만 추적합니다. 턴별 WAV·trace·로그와 GGUF·ONNX·외부 weight 등 로컬 실행 산출물은 크기나 민감도와 관계없이 커밋하지 않습니다.
+
 Threshold, 발화 종료 대기, 응답 토큰 상한, TTS 단계는 UI에서 즉시 변경할 수 있으며 브라우저별 `localStorage`에 저장됩니다. 이 저장값은 이후 접속에서도 `.env` 기본값보다 우선합니다. 긴 문장이 중간에 잘리면 UI의 발화 종료 대기를 1200~1500ms로 늘리고, 14초 제한 자체를 늘리려면 `VAD_MAX_TURN_MS`를 수정한 뒤 서버를 재시작합니다.
 
 ### RTX 5070 Ti용 llama.cpp 빌드
@@ -202,9 +212,10 @@ uv run omni-iot-tts \
 
 ```text
 .
+├── .runtime/                    # 턴별 오디오와 tool trace(로컬 전용)
 ├── docs/plan.md                 # 세부 진행 상황과 단계별 계획
 ├── docs/adr/                    # 장기 설계 결정 기록
-├── models/                      # 로컬 GGUF 모델
+├── models/                      # GGUF·ONNX 등 로컬 모델
 ├── src/omni_iot/
 │   ├── config.py                # 환경 설정
 │   ├── conversation.py          # 대화 세션
@@ -219,19 +230,22 @@ uv run omni-iot-tts \
 │   ├── wakeword.py              # openWakeWord 스트리밍 감지기
 │   └── static/                  # 브라우저 음성 UI
 ├── .env.example
+├── run-omni-iot.sh              # SwitchBot + Brave 통합 실행
 ├── pyproject.toml
 └── uv.lock
 ```
 
 ## 로드맵
 
-현재 프로토타입 범위는 다음 세 단계입니다.
+현재 프로토타입 범위와 품질 개선 방향은 다음과 같습니다.
 
 1. [완료] 방1의 로컬 OMNI → TTS 음성 대화와 MCP 기반 에어컨·선풍기 제어
 2. [다음] SwitchBot 물리 스위치를 연결해 조명 켜기·끄기 제어
 3. [다음] 거실 Bluetooth 스피커 출력과 방1·거실 다중 입력 처리
+4. [개선] Qwen3-Omni가 3턴 이상에서도 도구를 안정적으로 선택·실행하도록 멀티턴 성능 검증
+5. [개선] 현재 약 3~7초인 음성 턴 latency를 줄여 자연스러운 대화 UX 확보
 
-3단계까지 실제 장비에서 반복 동작을 확인하면 프로토타입을 완료한 것으로 봅니다. 범용 멀티룸 라우팅, 모바일 앱, 운영 수준의 장치 관리와 장기 안정화는 후속 범위입니다.
+3단계까지 실제 장비에서 반복 동작을 확인하면 기능 프로토타입을 완료한 것으로 봅니다. 멀티턴 도구 신뢰성은 [M5](https://github.com/htkim27/omni-iot/milestone/5), 음성 대화 latency는 [M6](https://github.com/htkim27/omni-iot/milestone/6)에서 별도로 추적합니다. 범용 멀티룸 라우팅, 모바일 앱, 운영 수준의 장치 관리와 장기 안정화는 후속 범위입니다.
 
 ## 테스트
 
