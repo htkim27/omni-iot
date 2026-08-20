@@ -8,10 +8,18 @@
       "allowedTools": [
         "list_devices",
         "get_device_status",
-        "send_command",
-        "list_scenes",
-        "run_scene"
+        "send_command"
       ],
+      "timeoutSeconds": 30
+    },
+    "brave-search": {
+      "command": "/absolute/path/to/npx",
+      "args": ["-y", "@brave/brave-search-mcp-server@2.1.0"],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      },
+      "enabled": false,
+      "allowedTools": ["brave_web_search", "brave_news_search"],
       "timeoutSeconds": 30
     },
     "remote-example": {

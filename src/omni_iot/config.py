@@ -72,6 +72,10 @@ class Settings:
         "MCP_TOOL_RESULT_MAX_CHARS",
         12_000,
     )
+    mcp_brave_search_max_results: int = _int_env(
+        "MCP_BRAVE_SEARCH_MAX_RESULTS",
+        5,
+    )
     mcp_max_tool_rounds: int = _int_env("MCP_MAX_TOOL_ROUNDS", 4)
     mcp_max_tool_calls: int = _int_env("MCP_MAX_TOOL_CALLS", 8)
     omni_backend: str = os.getenv("OMNI_BACKEND", "command").lower()
@@ -158,6 +162,8 @@ def get_settings() -> Settings:
         raise ValueError("MCP_TOOL_CATALOG_MAX_CHARS must be positive.")
     if settings.mcp_tool_result_max_chars < 1:
         raise ValueError("MCP_TOOL_RESULT_MAX_CHARS must be positive.")
+    if not 1 <= settings.mcp_brave_search_max_results <= 20:
+        raise ValueError("MCP_BRAVE_SEARCH_MAX_RESULTS must be between 1 and 20.")
     if settings.mcp_max_tool_rounds < 1 or settings.mcp_max_tool_calls < 1:
         raise ValueError("MCP tool round and call limits must be positive.")
     if settings.omni_backend not in {"command", "server"}:

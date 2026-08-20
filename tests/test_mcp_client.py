@@ -12,7 +12,13 @@ from omni_iot.mcp_client import McpManager, _tool_result_text, _truncate_result
 
 
 class _FakeClient:
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
+    def __init__(
+        self,
+        *_args: object,
+        tool_name: str = "allowed",
+        **_kwargs: object,
+    ) -> None:
+        self.tool_name = tool_name
         self.list_cursors: list[str | None] = []
         self.calls: list[tuple[str, dict[str, object]]] = []
 
@@ -28,9 +34,16 @@ class _FakeClient:
             return SimpleNamespace(
                 tools=[
                     SimpleNamespace(
-                        name="allowed",
+                        name=self.tool_name,
                         description="Allowed tool",
-                        input_schema={"type": "object", "properties": {}},
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "count": {"type": "integer", "maximum": 20},
+                                "extra_snippets": {"type": "boolean"},
+                                "summary": {"type": "boolean"},
+                            },
+                        },
                     )
                 ],
                 next_cursor="page-2",
@@ -70,7 +83,140 @@ class _FakeHttpClient:
     async def __aexit__(self, *_args: object) -> None:
         return None
 
+
 class McpManagerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_switchbot_projection_is_explicit_and_filters_hidden_arguments(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".mcp.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "mcpServers": {
+                            "switchbot": {
+                                "command": sys.executable,
+                                "allowedTools": ["send_command"],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fake = _FakeClient(tool_name="send_command")
+            with patch("omni_iot.mcp_client.Client", return_value=fake):
+                manager = McpManager(path)
+                await manager.start()
+                try:
+                    tool = manager.openai_tools()[0]["function"]
+                    await manager.call_tool(
+                        "switchbot__send_command",
+                        {
+                            "deviceId": "device-1",
+                            "command": "turnOn",
+                            "parameter": "default",
+                            "commandType": "customize",
+                            "confirm": True,
+                            "idempotencyKey": "model-generated",
+                            "dryRun": True,
+                        },
+                    )
+                finally:
+                    await manager.stop()
+
+        self.assertIn("server-side validation", tool["description"])
+        self.assertEqual(
+            set(tool["parameters"]["properties"]),
+            {"deviceId", "command", "parameter"},
+        )
+        self.assertEqual(
+            fake.calls,
+            [
+                (
+                    "send_command",
+                    {
+                        "deviceId": "device-1",
+                        "command": "turnOn",
+                        "parameter": "default",
+                        "commandType": "command",
+                        "confirm": False,
+                    },
+                )
+            ],
+        )
+
+    async def test_brave_search_is_small_by_default_and_hard_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".mcp.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "mcpServers": {
+                            "brave-search": {
+                                "command": sys.executable,
+                                "allowedTools": ["brave_web_search"],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fake = _FakeClient(tool_name="brave_web_search")
+            with patch("omni_iot.mcp_client.Client", return_value=fake):
+                manager = McpManager(path, brave_search_max_results=5)
+                await manager.start()
+                try:
+                    tool = manager.openai_tools()[0]["function"]
+                    await manager.call_tool(
+                        "brave-search__brave_web_search",
+                        {
+                            "query": "first query",
+                            "count": 20,
+                            "offset": 9,
+                            "extra_snippets": True,
+                            "summary": True,
+                        },
+                    )
+                    await manager.call_tool(
+                        "brave-search__brave_web_search",
+                        {"query": "different query"},
+                    )
+                finally:
+                    await manager.stop()
+
+        self.assertIn("different focused query", tool["description"])
+        self.assertEqual(
+            set(tool["parameters"]["properties"]),
+            {"query", "count", "freshness", "country", "search_lang"},
+        )
+        count_schema = tool["parameters"]["properties"]["count"]
+        self.assertEqual(count_schema["maximum"], 5)
+        self.assertEqual(
+            fake.calls,
+            [
+                (
+                    "brave_web_search",
+                    {
+                        "query": "first query",
+                        "count": 5,
+                        "extra_snippets": False,
+                        "summary": False,
+                    },
+                ),
+                (
+                    "brave_web_search",
+                    {
+                        "query": "different query",
+                        "count": 5,
+                        "extra_snippets": False,
+                        "summary": False,
+                    },
+                ),
+            ],
+        )
+
     async def test_paginates_filters_namespaces_and_calls_allowed_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / ".mcp.json"
