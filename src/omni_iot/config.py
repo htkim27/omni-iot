@@ -138,9 +138,9 @@ class Settings:
     vad_continue_multiplier: float = _float_env("VAD_CONTINUE_MULTIPLIER", 0.72)
     wakeword_model: Path = _path_env(
         "WAKEWORD_MODEL",
-        PROJECT_ROOT / "models" / "openwakeword" / "hey_jarvis_v0.1.onnx",
+        PROJECT_ROOT / "models" / "openwakeword" / "오둥아.onnx",
     )
-    wakeword_label: str = os.getenv("WAKEWORD_LABEL", "Hey Jarvis")
+    wakeword_label: str = os.getenv("WAKEWORD_LABEL", "오둥아")
     wakeword_threshold: float = _float_env("WAKEWORD_THRESHOLD", 0.5)
     wakeword_inference_framework: str = os.getenv(
         "WAKEWORD_INFERENCE_FRAMEWORK", "onnx"
