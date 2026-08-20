@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -33,10 +34,13 @@ DEFAULT_MMPROJ = (
     PROJECT_ROOT / "models" / "mmproj-Qwen3-Omni-30B-A3B-Instruct-Q8_0.gguf"
 )
 DEFAULT_SYSTEM = (
-    "You are a private local Korean voice assistant for a Jarvis-style IoT project. "
-    "Answer naturally and concisely in Korean."
+    "You are 오둥, a cute duck and private local Korean voice assistant for an IoT "
+    "project. Answer naturally and concisely in Korean. Always end every spoken "
+    "response with exactly this phrase: 오둥! 오둥!"
 )
 DEFAULT_PROMPT = "사용자의 음성 입력을 듣고 한국어로 자연스럽게 대답해줘."
+ODUNG_SUFFIX = "오둥! 오둥!"
+ODUNG_END_PATTERN = re.compile(r"[\s,，.。!！?？]*(?:오둥[\s!！]*)+$")
 
 
 def _structured_output_instruction() -> str:
@@ -565,7 +569,7 @@ def _parse_model_turn(text: str) -> ParsedModelTurn:
     if start < 0 or end <= start:
         return ParsedModelTurn(
             transcript=None,
-            response=original,
+            response=_ensure_odung_suffix(original),
             fallback_reason="No JSON object was found in the model output.",
         )
 
@@ -575,7 +579,7 @@ def _parse_model_turn(text: str) -> ParsedModelTurn:
     except json.JSONDecodeError:
         return ParsedModelTurn(
             transcript=None,
-            response=original,
+            response=_ensure_odung_suffix(original),
             parse_status="invalid_json",
             fallback_reason="The detected JSON object could not be decoded.",
         )
@@ -583,7 +587,7 @@ def _parse_model_turn(text: str) -> ParsedModelTurn:
     if not isinstance(payload, dict):
         return ParsedModelTurn(
             transcript=None,
-            response=original,
+            response=_ensure_odung_suffix(original),
             parse_status="invalid_schema",
             fallback_reason="The decoded JSON value was not an object.",
         )
@@ -597,7 +601,7 @@ def _parse_model_turn(text: str) -> ParsedModelTurn:
     if not isinstance(response, str) or not response.strip():
         return ParsedModelTurn(
             transcript=None,
-            response=original,
+            response=_ensure_odung_suffix(original),
             raw_transcript=raw_transcript,
             parse_status="invalid_schema",
             fallback_reason="The JSON object had no non-empty response field.",
@@ -613,7 +617,7 @@ def _parse_model_turn(text: str) -> ParsedModelTurn:
         parse_status = "valid_json"
     return ParsedModelTurn(
         transcript=transcript,
-        response=response.strip(),
+        response=_ensure_odung_suffix(response),
         raw_transcript=raw_transcript,
         parse_status=parse_status,
         structured_output_valid=True,
@@ -622,6 +626,14 @@ def _parse_model_turn(text: str) -> ParsedModelTurn:
             transcript,
         ),
     )
+
+
+def _ensure_odung_suffix(response: str) -> str:
+    text = response.strip()
+    without_existing_suffix = ODUNG_END_PATTERN.sub("", text).rstrip()
+    if without_existing_suffix:
+        return f"{without_existing_suffix} {ODUNG_SUFFIX}"
+    return ODUNG_SUFFIX
 
 
 def _transcript_normalization(raw: object, normalized: str | None) -> str:

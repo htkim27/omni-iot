@@ -87,7 +87,7 @@ class PipelineMultiTurnTest(unittest.TestCase):
             self.assertNotIn("result", trace["calls"][0])
             self.assertEqual(
                 [(message.role, message.content) for message in session.messages],
-                [("user", "불 켜줘"), ("assistant", "불을 켰습니다.")],
+                [("user", "불 켜줘"), ("assistant", "불을 켰습니다. 오둥! 오둥!")],
             )
 
     def test_external_backend_transcript_placeholder_is_discarded(self) -> None:
@@ -96,7 +96,7 @@ class PipelineMultiTurnTest(unittest.TestCase):
         )
 
         self.assertIsNone(result.user_text)
-        self.assertEqual(result.text, "괜찮아요.")
+        self.assertEqual(result.text, "괜찮아요. 오둥! 오둥!")
 
     def test_omnivoice_runs_in_the_server_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -215,7 +215,7 @@ class PipelineMultiTurnTest(unittest.TestCase):
                 history,
             )
             self.assertEqual(result.user_text, "기억해?")
-            self.assertEqual(result.text, "네, 민수님.")
+            self.assertEqual(result.text, "네, 민수님. 오둥! 오둥!")
 
 
 if __name__ == "__main__":

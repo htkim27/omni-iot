@@ -68,10 +68,12 @@ class McpManager:
         config_path: Path,
         catalog_max_chars: int = 12_000,
         result_max_chars: int = 12_000,
+        brave_search_max_results: int = 5,
     ) -> None:
         self.config_path = config_path
         self.catalog_max_chars = catalog_max_chars
         self.result_max_chars = result_max_chars
+        self.brave_search_max_results = brave_search_max_results
         self._servers: dict[str, _ServerRuntime] = {}
         self._bindings: dict[str, McpToolBinding] = {}
         self._reverse_bindings: dict[tuple[str, str], str] = {}
@@ -162,9 +164,15 @@ class McpManager:
             return self._error_result(binding, "MCP server is unavailable.", started_at)
 
         try:
-            result = await runtime.client.call_tool(
+            bounded_arguments = _project_tool_arguments(
+                binding.server_name,
                 binding.tool_name,
                 arguments,
+                self.brave_search_max_results,
+            )
+            result = await runtime.client.call_tool(
+                binding.tool_name,
+                bounded_arguments,
                 read_timeout_seconds=runtime.config.timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001 - transport errors become model-visible results
@@ -305,8 +313,18 @@ class McpManager:
                     "type": "function",
                     "function": {
                         "name": model_name,
-                        "description": tool.description or tool.name,
-                        "parameters": tool.input_schema,
+                        "description": _project_tool_description(
+                            server_name,
+                            tool.name,
+                            tool.description or tool.name,
+                            self.brave_search_max_results,
+                        ),
+                        "parameters": _project_tool_schema(
+                            server_name,
+                            tool.name,
+                            tool.input_schema,
+                            self.brave_search_max_results,
+                        ),
                     },
                 }
                 binding = McpToolBinding(
@@ -376,6 +394,164 @@ def _resolve_executable(command: str) -> str:
     if resolved_command is None:
         raise McpConfigError(f"MCP executable is not on PATH: {command}.")
     return resolved_command
+
+
+def _project_tool_arguments(
+    server_name: str,
+    tool_name: str,
+    arguments: dict[str, object],
+    maximum: int,
+) -> dict[str, object]:
+    if server_name == "brave-search" and tool_name in {
+        "brave_web_search",
+        "brave_news_search",
+    }:
+        bounded = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"query", "count", "freshness", "country", "search_lang"}
+        }
+        requested = bounded.get("count")
+        if requested is None:
+            bounded["count"] = maximum
+        elif isinstance(requested, int) and not isinstance(requested, bool):
+            bounded["count"] = min(requested, maximum)
+        bounded["extra_snippets"] = False
+        if tool_name == "brave_web_search":
+            bounded["summary"] = False
+        return bounded
+    if server_name == "switchbot" and tool_name == "list_devices":
+        return {}
+    if server_name == "switchbot" and tool_name == "get_device_status":
+        return {
+            key: value for key, value in arguments.items() if key == "deviceId"
+        }
+    if server_name == "switchbot" and tool_name == "send_command":
+        bounded = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"deviceId", "command", "parameter"}
+        }
+        bounded.update({"commandType": "command", "confirm": False})
+        return bounded
+    return arguments
+
+
+def _project_tool_description(
+    server_name: str,
+    tool_name: str,
+    original: str,
+    maximum: int,
+) -> str:
+    if server_name == "brave-search" and tool_name == "brave_web_search":
+        return (
+            "Search the current web and return at most "
+            f"{maximum} compact title, URL, and snippet results. "
+            "If evidence is insufficient, use a different focused query."
+        )
+    if server_name == "brave-search" and tool_name == "brave_news_search":
+        return (
+            "Search recent news and return at most "
+            f"{maximum} compact source, title, URL, and snippet results. "
+            "If evidence is insufficient, use a different focused query."
+        )
+    if server_name == "switchbot" and tool_name == "list_devices":
+        return (
+            "List SwitchBot devices and IR remotes with names, types, IDs, and "
+            "command capabilities. Use before device status or control calls."
+        )
+    if server_name == "switchbot" and tool_name == "get_device_status":
+        return (
+            "Get the current status of a physical SwitchBot device. IR remotes "
+            "do not expose status."
+        )
+    if server_name == "switchbot" and tool_name == "send_command":
+        return (
+            "Send a safe command to a SwitchBot device. Use list_devices first; "
+            "server-side validation and safety policy still apply."
+        )
+    return original
+
+
+def _project_tool_schema(
+    server_name: str,
+    tool_name: str,
+    input_schema: dict[str, object],
+    maximum: int,
+) -> dict[str, object]:
+    if server_name == "brave-search" and tool_name in {
+        "brave_web_search",
+        "brave_news_search",
+    }:
+        return {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Focused search query (max 400 characters).",
+                "maxLength": 400,
+            },
+            "count": {
+                "type": "integer",
+                "description": "Number of compact results.",
+                "minimum": 1,
+                "maximum": maximum,
+                "default": maximum,
+            },
+            "freshness": {
+                "type": "string",
+                "description": "Optional pd, pw, pm, py, or date range filter.",
+            },
+            "country": {
+                "type": "string",
+                "description": "Optional two-letter country code such as KR.",
+            },
+            "search_lang": {
+                "type": "string",
+                "description": "Optional search language code such as ko.",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+        }
+    if server_name == "switchbot" and tool_name == "list_devices":
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    if server_name == "switchbot" and tool_name == "get_device_status":
+        return {
+            "type": "object",
+            "properties": {
+                "deviceId": {
+                    "type": "string",
+                    "description": "Device ID returned by list_devices.",
+                }
+            },
+            "required": ["deviceId"],
+            "additionalProperties": False,
+        }
+    if server_name == "switchbot" and tool_name == "send_command":
+        return {
+            "type": "object",
+            "properties": {
+                "deviceId": {
+                    "type": "string",
+                    "description": "Device ID returned by list_devices.",
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Case-sensitive device command such as turnOn.",
+                },
+                "parameter": {
+                    "description": "Optional device-specific command parameter.",
+                },
+            },
+            "required": ["deviceId", "command"],
+            "additionalProperties": False,
+        }
+    return input_schema
 
 
 def _model_tool_name(server_name: str, tool_name: str) -> str:

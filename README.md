@@ -70,7 +70,7 @@ cp .env.example .env
 uv run omni-iot --host 127.0.0.1 --port 8000
 ```
 
-모델 다운로드 명령은 최초 준비 단계에서만 인터넷을 사용합니다. 이후 호출어 인식과 음성 대화는 로컬 파일만 사용하며 실행 중 모델을 자동 다운로드하지 않습니다. 기본 모델은 openWakeWord가 제공하는 `hey_jarvis_v0.1.onnx`이고 호출 문구는 영어 `Hey Jarvis`입니다. Air-gapped 환경에서는 모델과 `melspectrogram.onnx`, `embedding_model.onnx`를 `models/openwakeword/`에 미리 복사하면 됩니다.
+모델 다운로드 명령은 최초 준비 단계에서만 인터넷을 사용합니다. 이후 호출어 인식과 음성 대화는 로컬 파일만 사용하며 실행 중 모델을 자동 다운로드하지 않습니다. 기본 모델은 프로젝트에서 학습한 `오둥아.onnx`이고 호출 문구는 `오둥아`입니다. Air-gapped 환경에서는 모델과 외부 데이터 파일 `wakeword.onnx.data`, 그리고 `melspectrogram.onnx`, `embedding_model.onnx`를 `models/openwakeword/`에 미리 복사하면 됩니다.
 
 첫 실행에서는 Qwen3-Omni와 OmniVoice를 메모리에 올린 뒤 서버가 준비되므로 시간이 걸릴 수 있습니다. 종료 시 함께 시작된 `llama-server`도 자동으로 종료됩니다.
 

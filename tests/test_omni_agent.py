@@ -111,7 +111,7 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
             [arguments["command"] for _, arguments in mcp.calls],
             ["turnOn", "turnOff"],
         )
-        self.assertEqual(json.loads(generation.output)["text"], "완료했습니다.")
+        self.assertEqual(json.loads(generation.output)["text"], "완료했습니다. 오둥! 오둥!")
         self.assertEqual(len(generation.tool_trace), 2)
         second_messages = llama.chat_requests[1][0]
         self.assertEqual(second_messages[-2]["tool_call_id"], "one")
@@ -166,7 +166,7 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(llama.generate_calls, 0)
         self.assertIsNone(llama.chat_requests[0][1])
-        self.assertEqual(json.loads(result.output)["text"], "반가워요.")
+        self.assertEqual(json.loads(result.output)["text"], "반가워요. 오둥! 오둥!")
 
     async def test_round_limit_forces_a_tool_free_final_request(self) -> None:
         llama = _FakeLlama(

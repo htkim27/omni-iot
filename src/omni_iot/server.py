@@ -37,6 +37,7 @@ mcp_service = McpManager(
     settings.mcp_config,
     catalog_max_chars=settings.mcp_tool_catalog_max_chars,
     result_max_chars=settings.mcp_tool_result_max_chars,
+    brave_search_max_results=5,
 )
 omni_agent = (
     OmniAgent(omni_service, mcp_service, settings, ai_observability)

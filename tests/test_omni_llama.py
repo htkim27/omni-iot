@@ -60,7 +60,10 @@ class OmniLlamaTest(unittest.TestCase):
             ) as request:
                 result = json.loads(server.generate(audio_path, [], max_tokens=96))
 
-            self.assertEqual(result, {"user_text": "안녕", "text": "반가워요."})
+            self.assertEqual(
+                result,
+                {"user_text": "안녕", "text": "반가워요. 오둥! 오둥!"},
+            )
             payload = request.call_args.args[1]
             self.assertTrue(payload["cache_prompt"])
             self.assertEqual(payload["max_tokens"], 96)
@@ -151,7 +154,7 @@ class OmniLlamaTest(unittest.TestCase):
         transcript, response = parsed
 
         self.assertEqual(transcript, "기억해?")
-        self.assertEqual(response, "네, 기억해요.")
+        self.assertEqual(response, "네, 기억해요. 오둥! 오둥!")
         self.assertEqual(parsed.parse_status, "fenced_json")
         self.assertTrue(parsed.structured_output_valid)
 
@@ -160,7 +163,7 @@ class OmniLlamaTest(unittest.TestCase):
         transcript, response = parsed
 
         self.assertIsNone(transcript)
-        self.assertEqual(response, "그대로 사용할 응답")
+        self.assertEqual(response, "그대로 사용할 응답 오둥! 오둥!")
         self.assertEqual(parsed.parse_status, "plain_text_fallback")
         self.assertFalse(parsed.structured_output_valid)
 
@@ -172,8 +175,13 @@ class OmniLlamaTest(unittest.TestCase):
         transcript, response = parsed
 
         self.assertIsNone(transcript)
-        self.assertEqual(response, "다시 말씀해 주세요.")
+        self.assertEqual(response, "다시 말씀해 주세요. 오둥! 오둥!")
         self.assertEqual(parsed.transcript_normalization, "placeholder_filtered")
+
+    def test_parse_model_turn_normalizes_existing_odung_suffix(self) -> None:
+        parsed = _parse_model_turn('{"transcript":"안녕","response":"반가워요 오둥"}')
+
+        self.assertEqual(parsed.response, "반가워요 오둥! 오둥!")
 
     def test_parse_model_turn_reports_embedded_invalid_json_and_schema(self) -> None:
         embedded = _parse_model_turn(
