@@ -27,7 +27,7 @@ class ClientConfigTest(unittest.TestCase):
 
         self.assertEqual(payload["vad"]["silence_end_ms"], 600)
         self.assertEqual(payload["generation"]["max_response_tokens"], 192)
-        self.assertEqual(payload["wakeword"]["label"], "Hey Jarvis")
+        self.assertEqual(payload["wakeword"]["label"], "오둥아")
         self.assertEqual(payload["wakeword"]["threshold"], 0.5)
         self.assertNotIn("model", payload)
         self.assertNotIn("command", payload)
