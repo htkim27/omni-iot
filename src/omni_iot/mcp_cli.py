@@ -135,9 +135,12 @@ def _run(args: argparse.Namespace, path: Path) -> int:
 
 
 async def _doctor(path: Path, as_json: bool) -> int:
+    settings = Settings()
     manager = McpManager(
         path,
-        brave_search_max_results=Settings().mcp_brave_search_max_results,
+        catalog_max_chars=settings.mcp_tool_catalog_max_chars,
+        result_max_chars=settings.mcp_tool_result_max_chars,
+        brave_search_max_results=settings.mcp_brave_search_max_results,
     )
     await manager.start()
     try:

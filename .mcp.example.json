@@ -8,9 +8,7 @@
       "allowedTools": [
         "list_devices",
         "get_device_status",
-        "send_command",
-        "list_scenes",
-        "run_scene"
+        "send_command"
       ],
       "timeoutSeconds": 30
     },

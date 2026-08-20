@@ -352,7 +352,8 @@ pipeline과 설정 전달 경로는 자동화된 회귀 테스트로 확인하�
 - [x] 서버별 fail-closed 격리와 `/api/health`, `doctor` 진단
 - [x] tool trace 최소 기록 및 최종 대화만 history에 보존
 - [ ] 실제 Qwen 음성 tool smoke test
-- [x] 공식 SwitchBot CLI 설치·인증 및 5개 도구 discovery
+- [x] 공식 SwitchBot CLI 설치·인증 및 5개 도구 discovery, 개별 장치용 3개 활성
+- [ ] 사용자 Scene 구성 후 `list_scenes`/`run_scene` 재활성화 실험 ([#18](https://github.com/htkim27/omni-iot/issues/18))
 - [x] 에어컨·선풍기를 실제 MCP 제어 대상으로 연결
 - [x] 공식 Brave Search MCP를 웹·뉴스 2개 도구로 최소 등록
 - [x] Brave 검색 결과 상한·compact option·추가 질의 정책을 하네스와 ADR에 적용

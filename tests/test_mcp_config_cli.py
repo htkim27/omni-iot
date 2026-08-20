@@ -7,7 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from omni_iot.mcp_cli import _parser, _run
 from omni_iot.mcp_config import McpConfigError, expand_env, load_mcp_config
@@ -104,6 +105,36 @@ class McpConfigTest(unittest.TestCase):
 
 
 class McpCliTest(unittest.TestCase):
+    def test_doctor_uses_runtime_catalog_and_result_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".mcp.json"
+            manager = SimpleNamespace(
+                start=AsyncMock(),
+                stop=AsyncMock(),
+                health=lambda: {"ok": True, "error": None, "servers": []},
+            )
+            settings = SimpleNamespace(
+                mcp_tool_catalog_max_chars=16_000,
+                mcp_tool_result_max_chars=6_000,
+                mcp_brave_search_max_results=5,
+            )
+            parser = _parser()
+            args = parser.parse_args(
+                ["--config", str(path), "doctor", "--json"]
+            )
+            with (
+                patch("omni_iot.mcp_cli.Settings", return_value=settings),
+                patch("omni_iot.mcp_cli.McpManager", return_value=manager) as factory,
+            ):
+                self.assertEqual(_run(args, path), 0)
+
+        factory.assert_called_once_with(
+            path,
+            catalog_max_chars=16_000,
+            result_max_chars=6_000,
+            brave_search_max_results=5,
+        )
+
     def test_registration_and_allowlist_updates_are_atomic_and_private(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / ".mcp.json"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import hashlib
 import json
 import os
@@ -23,10 +22,6 @@ from .mcp_config import McpConfigError, McpServerConfig, load_mcp_config
 
 OPENAI_TOOL_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]")
 OPENAI_TOOL_NAME_MAX_LENGTH = 64
-COMPACT_SEARCH_OPTIONS: dict[str, tuple[str, ...]] = {
-    "brave_web_search": ("extra_snippets", "summary"),
-    "brave_news_search": ("extra_snippets",),
-}
 
 
 @dataclass(frozen=True)
@@ -168,7 +163,8 @@ class McpManager:
             return self._error_result(binding, "MCP server is unavailable.", started_at)
 
         try:
-            bounded_arguments = _compact_search_arguments(
+            bounded_arguments = _project_tool_arguments(
+                binding.server_name,
                 binding.tool_name,
                 arguments,
                 self.brave_search_max_results,
@@ -310,19 +306,18 @@ class McpManager:
                     self._reverse_bindings = {}
                     self._catalog = []
                     return
-                description = tool.description or tool.name
-                if tool.name in COMPACT_SEARCH_OPTIONS:
-                    description += (
-                        f" Start with at most {self.brave_search_max_results} results. "
-                        "If evidence is insufficient, search again with a meaningfully "
-                        "different query instead of requesting one large result set."
-                    )
                 definition: dict[str, object] = {
                     "type": "function",
                     "function": {
                         "name": model_name,
-                        "description": description,
-                        "parameters": _compact_search_schema(
+                        "description": _project_tool_description(
+                            server_name,
+                            tool.name,
+                            tool.description or tool.name,
+                            self.brave_search_max_results,
+                        ),
+                        "parameters": _project_tool_schema(
+                            server_name,
                             tool.name,
                             tool.input_schema,
                             self.brave_search_max_results,
@@ -398,44 +393,162 @@ def _resolve_executable(command: str) -> str:
     return resolved_command
 
 
-def _compact_search_arguments(
+def _project_tool_arguments(
+    server_name: str,
     tool_name: str,
     arguments: dict[str, object],
-    maximum: int,
+    brave_search_max_results: int,
 ) -> dict[str, object]:
-    if tool_name not in COMPACT_SEARCH_OPTIONS:
-        return arguments
-    bounded = dict(arguments)
-    requested = bounded.get("count")
-    if requested is None:
-        bounded["count"] = maximum
-    elif isinstance(requested, int) and not isinstance(requested, bool):
-        bounded["count"] = min(requested, maximum)
-    for option in COMPACT_SEARCH_OPTIONS[tool_name]:
-        bounded[option] = False
-    return bounded
+    if server_name == "brave-search" and tool_name in {
+        "brave_web_search",
+        "brave_news_search",
+    }:
+        bounded = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"query", "count", "freshness", "country", "search_lang"}
+        }
+        requested = bounded.get("count")
+        if requested is None:
+            bounded["count"] = brave_search_max_results
+        if isinstance(requested, int) and not isinstance(requested, bool):
+            bounded["count"] = min(requested, brave_search_max_results)
+        bounded["extra_snippets"] = False
+        if tool_name == "brave_web_search":
+            bounded["summary"] = False
+        return bounded
+    if server_name == "switchbot" and tool_name == "list_devices":
+        return {}
+    if server_name == "switchbot" and tool_name == "get_device_status":
+        return {
+            key: value for key, value in arguments.items() if key == "deviceId"
+        }
+    if server_name == "switchbot" and tool_name == "send_command":
+        bounded = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"deviceId", "command", "parameter"}
+        }
+        bounded.update({"commandType": "command", "confirm": False})
+        return bounded
+    return arguments
 
 
-def _compact_search_schema(
+def _project_tool_description(
+    server_name: str,
+    tool_name: str,
+    original: str,
+    brave_search_max_results: int,
+) -> str:
+    if server_name == "brave-search" and tool_name == "brave_web_search":
+        return (
+            "Search the current web and return at most "
+            f"{brave_search_max_results} compact title, URL, and snippet results. "
+            "If evidence is insufficient, use a different focused query."
+        )
+    if server_name == "brave-search" and tool_name == "brave_news_search":
+        return (
+            "Search recent news and return at most "
+            f"{brave_search_max_results} compact source, title, URL, and snippet "
+            "results. If evidence is insufficient, use a different focused query."
+        )
+    if server_name == "switchbot" and tool_name == "list_devices":
+        return (
+            "List SwitchBot devices and IR remotes with names, types, IDs, and "
+            "command capabilities. Use before device status or control calls."
+        )
+    if server_name == "switchbot" and tool_name == "get_device_status":
+        return (
+            "Get the current status of a physical SwitchBot device. IR remotes "
+            "do not expose status."
+        )
+    if server_name == "switchbot" and tool_name == "send_command":
+        return (
+            "Send a safe command to a SwitchBot device. Use list_devices first; "
+            "server-side validation and safety policy still apply."
+        )
+    return original
+
+
+def _project_tool_schema(
+    server_name: str,
     tool_name: str,
     input_schema: dict[str, object],
-    maximum: int,
+    brave_search_max_results: int,
 ) -> dict[str, object]:
-    if tool_name not in COMPACT_SEARCH_OPTIONS:
-        return input_schema
-    schema = copy.deepcopy(input_schema)
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        count = properties.get("count")
-        if isinstance(count, dict):
-            count["maximum"] = maximum
-            count["default"] = maximum
-        for option in COMPACT_SEARCH_OPTIONS[tool_name]:
-            value = properties.get(option)
-            if isinstance(value, dict):
-                value["default"] = False
-                value["const"] = False
-    return schema
+    if server_name == "brave-search" and tool_name in {
+        "brave_web_search",
+        "brave_news_search",
+    }:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Focused search query (max 400 characters).",
+                    "maxLength": 400,
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of compact results.",
+                    "minimum": 1,
+                    "maximum": brave_search_max_results,
+                    "default": brave_search_max_results,
+                },
+                "freshness": {
+                    "type": "string",
+                    "description": "Optional pd, pw, pm, py, or date range filter.",
+                },
+                "country": {
+                    "type": "string",
+                    "description": "Optional two-letter country code such as KR.",
+                },
+                "search_lang": {
+                    "type": "string",
+                    "description": "Optional search language code such as ko.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+    if server_name == "switchbot" and tool_name == "list_devices":
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    if server_name == "switchbot" and tool_name == "get_device_status":
+        return {
+            "type": "object",
+            "properties": {
+                "deviceId": {
+                    "type": "string",
+                    "description": "Device ID returned by list_devices.",
+                },
+            },
+            "required": ["deviceId"],
+            "additionalProperties": False,
+        }
+    if server_name == "switchbot" and tool_name == "send_command":
+        return {
+            "type": "object",
+            "properties": {
+                "deviceId": {
+                    "type": "string",
+                    "description": "Device ID returned by list_devices.",
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Case-sensitive device command such as turnOn.",
+                },
+                "parameter": {
+                    "description": "Optional device-specific command parameter.",
+                },
+            },
+            "required": ["deviceId", "command"],
+            "additionalProperties": False,
+        }
+    return input_schema
 
 
 def _model_tool_name(server_name: str, tool_name: str) -> str:
