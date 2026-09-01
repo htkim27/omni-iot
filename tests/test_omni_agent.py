@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from omni_iot.config import Settings
 from omni_iot.mcp_client import McpCallResult
-from omni_iot.omni_agent import OmniAgent
+from omni_iot.omni_agent import OmniAgent, _ResponseDeltaExtractor
 from omni_iot.omni_llama import ChatCompletion, ToolCall
 
 
@@ -109,6 +109,8 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(json.loads(generation.output)["text"], "완료했습니다.")
         self.assertEqual(len(generation.tool_trace), 2)
+        self.assertEqual(generation.timings["llm_rounds"], 2.0)
+        self.assertEqual(generation.timings["tool_execution_seconds"], 0.02)
         second_messages = llama.chat_requests[1][0]
         self.assertEqual(second_messages[-2]["tool_call_id"], "one")
         self.assertEqual(second_messages[-1]["tool_call_id"], "two")
@@ -153,6 +155,7 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(llama.generate_calls, 1)
         self.assertEqual(json.loads(result.output)["text"], "반가워요.")
+        self.assertEqual(result.timings["llm_rounds"], 1.0)
 
     async def test_round_limit_forces_a_tool_free_final_request(self) -> None:
         llama = _FakeLlama(
@@ -183,6 +186,16 @@ class OmniAgentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(llama.chat_requests[-1][1])
         self.assertIn("요약", json.loads(result.output)["text"])
+
+    async def test_response_delta_extractor_emits_only_response_json_value(self) -> None:
+        emitted: list[str] = []
+        extractor = _ResponseDeltaExtractor(emitted.append)
+
+        extractor.feed('{"transcript":"안녕","response":"반')
+        extractor.feed('가워요!\\n오늘도 좋아요."}')
+        extractor.finish("반가워요!\n오늘도 좋아요.")
+
+        self.assertEqual("".join(emitted), "반가워요!\n오늘도 좋아요.")
 
 
 if __name__ == "__main__":

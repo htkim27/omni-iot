@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -12,6 +13,38 @@ from omnivoice import OmniVoice
 
 SAMPLE_RATE = 24_000
 _generation_lock = Lock()
+
+
+def split_text_chunks(text: str, max_chars: int = 80) -> list[str]:
+    """Split text into independently playable, sentence-like TTS chunks."""
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+    if max_chars < 1:
+        raise ValueError("max_chars must be positive.")
+
+    sentences = [
+        part.strip()
+        for part in re.findall(r".+?(?:[.!?。！？~]+(?=\s|$)|$)", normalized)
+        if part.strip()
+    ]
+    chunks: list[str] = []
+    for sentence in sentences:
+        remainder = sentence
+        while len(remainder) > max_chars:
+            split_at = max(
+                remainder.rfind(delimiter, 0, max_chars + 1)
+                for delimiter in (" ", ",", "、")
+            )
+            if split_at <= 0:
+                split_at = max_chars
+            chunk = remainder[:split_at].strip()
+            if chunk:
+                chunks.append(chunk)
+            remainder = remainder[split_at:].strip(" ,、")
+        if remainder:
+            chunks.append(remainder)
+    return chunks
 
 
 def _generation_kwargs(

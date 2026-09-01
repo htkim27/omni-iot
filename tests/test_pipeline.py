@@ -19,6 +19,7 @@ from omni_iot.pipeline import (
     run_tts,
     run_turn_pipeline,
 )
+from omni_iot.tts_omnivoice import split_text_chunks
 
 
 def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
@@ -34,6 +35,20 @@ def _settings(runtime_dir: Path, omni_command: str | None = None) -> Settings:
 
 async def _direct_to_thread(function: Callable[..., Any], *args: object, **kwargs: object) -> Any:
     return function(*args, **kwargs)
+
+
+class TtsChunkingTest(unittest.TestCase):
+    def test_splits_korean_sentences_for_incremental_playback(self) -> None:
+        self.assertEqual(
+            split_text_chunks("오늘은 좋아요! 산책할까요? 오둥!"),
+            ["오늘은 좋아요!", "산책할까요?", "오둥!"],
+        )
+
+    def test_splits_long_sentence_at_word_boundary(self) -> None:
+        chunks = split_text_chunks("하나 둘 셋 넷 다섯 여섯", max_chars=8)
+
+        self.assertEqual(" ".join(chunks), "하나 둘 셋 넷 다섯 여섯")
+        self.assertTrue(all(len(chunk) <= 8 for chunk in chunks))
 
 
 class PipelineMultiTurnTest(unittest.TestCase):
@@ -53,6 +68,7 @@ class PipelineMultiTurnTest(unittest.TestCase):
                             "ok": True,
                         },
                     ),
+                    timings={"llm_inference_seconds": 1.25, "llm_rounds": 2.0},
                 )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -85,6 +101,13 @@ class PipelineMultiTurnTest(unittest.TestCase):
             )
             self.assertEqual(trace["calls"][0]["tool"], "send_command")
             self.assertNotIn("result", trace["calls"][0])
+            timings = json.loads(
+                (runtime_dir / result.turn_id / "timings.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(timings["llm_inference_seconds"], 1.25)
+            self.assertEqual(timings["llm_rounds"], 2.0)
             self.assertEqual(
                 [(message.role, message.content) for message in session.messages],
                 [("user", "불 켜줘"), ("assistant", "불을 켰습니다.")],

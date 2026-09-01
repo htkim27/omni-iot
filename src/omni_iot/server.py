@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import io
 import json
+import time
+import uuid
 import wave
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -27,10 +29,15 @@ from .mcp_client import McpManager
 from .omni_agent import OmniAgent
 from .omni_llama import LlamaServer
 from .pipeline import TurnResult, run_demo_pipeline, run_turn_pipeline
+from .runtime import prune_runtime_turns
+from .vllm_omni import VllmOmniClient, decode_audio_chunk
 from .wakeword import SAMPLE_RATE, WakeWordDetector
 
 settings = get_settings()
 omni_service = LlamaServer(settings) if settings.omni_backend == "server" else None
+vllm_omni_service = (
+    VllmOmniClient(settings) if settings.omni_backend == "vllm_omni" else None
+)
 mcp_service = McpManager(
     settings.mcp_config,
     catalog_max_chars=settings.mcp_tool_catalog_max_chars,
@@ -45,11 +52,14 @@ omni_agent = (
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     tts_loaded = False
+    mcp_started = False
     try:
         if omni_service:
             await asyncio.to_thread(omni_service.start)
-        await mcp_service.start()
-        if settings.tts_backend == "omnivoice":
+        if settings.omni_backend != "vllm_omni":
+            await mcp_service.start()
+            mcp_started = True
+        if settings.omni_backend != "vllm_omni" and settings.tts_backend == "omnivoice":
             from .tts_omnivoice import load_model, warmup_model
 
             await asyncio.to_thread(load_model, settings.omnivoice_model_id)
@@ -65,7 +75,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 )
         yield
     finally:
-        await mcp_service.stop()
+        if mcp_started:
+            await mcp_service.stop()
         if tts_loaded:
             from .tts_omnivoice import clear_model_cache
 
@@ -87,6 +98,11 @@ def index() -> FileResponse:
 
 @app.post("/api/demo")
 async def demo(request: Request) -> JSONResponse:
+    if settings.omni_backend == "vllm_omni":
+        raise HTTPException(
+            status_code=501,
+            detail="vLLM-Omni native audio output is available through /ws/audio.",
+        )
     audio = await request.body()
     if not audio:
         raise HTTPException(status_code=400, detail="No audio bytes received.")
@@ -118,6 +134,11 @@ async def turn(
     request: Request,
     x_session_id: str | None = Header(default=None),
 ) -> JSONResponse:
+    if settings.omni_backend == "vllm_omni":
+        raise HTTPException(
+            status_code=501,
+            detail="vLLM-Omni native audio output is available through /ws/audio.",
+        )
     audio_bytes = await request.body()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="No audio bytes received.")
@@ -291,6 +312,8 @@ async def audio_stream(websocket: WebSocket) -> None:
             elif event_type == "reply_ended" and state == "speaking":
                 state = "follow_up"
                 await websocket.send_json({"type": "state", "state": state})
+            elif event_type == "playback_started":
+                _record_browser_playback_timing(event)
             elif event_type == "sleep":
                 state = "sleeping"
                 audio_buffer.clear()
@@ -318,6 +341,13 @@ async def _finish_websocket_turn(
     tts_num_steps: int | None,
 ) -> str:
     await websocket.send_json({"type": "state", "state": "processing"})
+    if vllm_omni_service is not None:
+        return await _stream_vllm_omni_turn(
+            websocket,
+            bytes(pcm),
+            session,
+            max_tokens,
+        )
     try:
         result = await run_turn_pipeline(
             _pcm_to_wav(bytes(pcm)),
@@ -346,6 +376,105 @@ async def _finish_websocket_turn(
         }
     )
     await websocket.send_json(payload)
+    return "speaking"
+
+
+async def _stream_vllm_omni_turn(
+    websocket: WebSocket,
+    pcm: bytes,
+    session: ConversationSession,
+    max_tokens: int | None,
+) -> str:
+    turn_id = uuid.uuid4().hex
+    turn_dir = settings.runtime_dir / turn_id
+    turn_dir.mkdir(parents=True, exist_ok=True)
+    prune_runtime_turns(
+        settings.runtime_dir,
+        keep=settings.runtime_turn_limit,
+        protected={turn_dir},
+    )
+    input_path = turn_dir / "input.wav"
+    input_path.write_bytes(_pcm_to_wav(pcm))
+
+    started_at = time.perf_counter()
+    first_audio_at: float | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+    text_parts: list[str] = []
+    history = session.prompt_history(settings.conversation_history_messages)
+
+    try:
+        assert vllm_omni_service is not None
+        async for chunk in vllm_omni_service.stream(
+            input_path,
+            history,
+            max_tokens=max_tokens,
+        ):
+            if chunk.modality == "text":
+                text_parts.append(str(chunk.content))
+                continue
+            if chunk.modality != "audio" or not isinstance(chunk.content, bytes):
+                continue
+
+            decoded = decode_audio_chunk(chunk.content)
+            if sample_rate is None:
+                sample_rate = decoded.sample_rate
+                channels = decoded.channels
+                first_audio_at = time.perf_counter()
+                await websocket.send_json(
+                    {
+                        "type": "audio_stream_start",
+                        "turn_id": turn_id,
+                        "sample_rate": sample_rate,
+                        "channels": channels,
+                        "encoding": "pcm_s16le",
+                        "state": "speaking",
+                    }
+                )
+            elif (sample_rate, channels) != (
+                decoded.sample_rate,
+                decoded.channels,
+            ):
+                raise RuntimeError("vLLM-Omni changed audio format mid-stream.")
+            await websocket.send_bytes(decoded.data)
+    except Exception as exc:  # noqa: BLE001 - surface streaming failures to client
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.send_json({"type": "state", "state": "follow_up"})
+        return "follow_up"
+
+    if first_audio_at is None:
+        await websocket.send_json(
+            {"type": "error", "message": "vLLM-Omni returned no audio chunks."}
+        )
+        await websocket.send_json({"type": "state", "state": "follow_up"})
+        return "follow_up"
+
+    text = "".join(text_parts).strip()
+    session.add_user_audio_turn()
+    if text:
+        session.add_assistant_message(text)
+    total_seconds = time.perf_counter() - started_at
+    timings = {
+        "first_audio_ready_seconds": round(first_audio_at - started_at, 3),
+        "stream_complete_seconds": round(total_seconds, 3),
+        "total_seconds": round(total_seconds, 3),
+    }
+    (turn_dir / "timings.json").write_text(
+        json.dumps(timings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    await websocket.send_json(
+        {
+            "type": "audio_stream_end",
+            "turn_id": turn_id,
+            "text": text,
+            "user_text": None,
+            "timings": timings,
+            "session_id": session.id,
+            "transcript": session.transcript(),
+            "state": "speaking",
+        }
+    )
     return "speaking"
 
 
@@ -381,13 +510,17 @@ async def reset_session(x_session_id: str | None = Header(default=None)) -> JSON
 
 @app.get("/api/health")
 def health() -> JSONResponse:
+    if vllm_omni_service is not None:
+        omni_configured = vllm_omni_service.ready
+    elif omni_service is not None:
+        omni_configured = omni_service.ready
+    else:
+        omni_configured = bool(settings.omni_command)
     return JSONResponse(
         {
             "ok": True,
             "omni_backend": settings.omni_backend,
-            "omni_configured": (
-                omni_service.ready if omni_service else bool(settings.omni_command)
-            ),
+            "omni_configured": omni_configured,
             "tts_backend": settings.tts_backend,
             "tts_configured": settings.tts_backend == "omnivoice" or bool(settings.tts_command),
             "mcp": mcp_service.health(),
@@ -414,6 +547,7 @@ def client_config() -> JSONResponse:
             },
             "features": {
                 "sentence_tts_pipelining": False,
+                "native_audio_streaming": settings.omni_backend == "vllm_omni",
                 "wake_word": True,
             },
             "audio": {
@@ -445,6 +579,34 @@ def _is_runtime_child(path: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _record_browser_playback_timing(event: dict[str, object]) -> None:
+    turn_id = event.get("turn_id")
+    seconds = event.get("browser_speech_end_to_audio_start_seconds")
+    if (
+        not isinstance(turn_id, str)
+        or len(turn_id) != 32
+        or not all(character in "0123456789abcdef" for character in turn_id)
+        or isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not 0 <= seconds <= settings.omni_timeout_seconds + settings.tts_timeout_seconds
+    ):
+        return
+    timing_path = settings.runtime_dir / turn_id / "timings.json"
+    if not _is_runtime_child(timing_path) or not timing_path.exists():
+        return
+    try:
+        timings = json.loads(timing_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(timings, dict):
+        return
+    timings["browser_speech_end_to_audio_start_seconds"] = round(float(seconds), 3)
+    timing_path.write_text(
+        json.dumps(timings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _turn_payload(result: TurnResult, audio_url: str | None) -> dict[str, object]:

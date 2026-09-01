@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Iterator
 
 from .conversation import normalize_user_transcript
 
@@ -37,12 +37,17 @@ DEFAULT_SYSTEM = (
 DEFAULT_PROMPT = "사용자의 음성 입력을 듣고 한국어로 자연스럽게 대답해줘."
 
 
-def _structured_output_instruction() -> str:
+def _structured_output_instruction(response_first: bool = False) -> str:
+    key_instruction = (
+        "키는 response와 transcript 두 개이며 response를 반드시 먼저 출력한다. "
+        if response_first
+        else "키는 transcript와 response 두 개다. "
+    )
     return (
         "사용 가능한 도구가 있고 답변에 필요하면 먼저 도구를 호출하라. "
         "도구 호출 자체를 최종 JSON 안에 넣지 말고, 도구 결과를 받은 뒤 최종 답변을 작성하라. "
         "반드시 다른 설명이나 Markdown 없이 JSON 객체 하나만 출력하라. "
-        "키는 transcript와 response 두 개다. "
+        f"{key_instruction}"
         "transcript에는 오디오에서 실제로 들은 사용자 발화를 그대로 적고, "
         "지시문이나 형식 설명을 복사하지 마라. 발화를 판별할 수 없으면 null을 사용하라. "
         "response에는 사용자에게 말할 자연스러운 한국어 답변을 적어라."
@@ -70,6 +75,8 @@ class ToolCall:
 class ChatCompletion:
     content: str | None
     tool_calls: tuple[ToolCall, ...] = ()
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
     def as_assistant_message(self) -> dict[str, object]:
         message: dict[str, object] = {
@@ -196,6 +203,7 @@ class LlamaServer:
                 max_tokens if max_tokens is not None else self.settings.llama_n_predict
             ),
             "temperature": self.settings.llama_temperature,
+            "seed": self.settings.llama_seed,
             "cache_prompt": self.settings.llama_cache_prompt,
         }
         if tools:
@@ -234,7 +242,100 @@ class LlamaServer:
         calls = _parse_tool_calls(message.get("tool_calls"))
         if not normalized_content and not calls:
             raise RuntimeError("llama-server returned an empty assistant response.")
-        return ChatCompletion(content=normalized_content, tool_calls=tuple(calls))
+        usage = response.get("usage")
+        prompt_tokens = 0
+        completion_tokens = 0
+        if isinstance(usage, dict):
+            if isinstance(usage.get("prompt_tokens"), int):
+                prompt_tokens = usage["prompt_tokens"]
+            if isinstance(usage.get("completion_tokens"), int):
+                completion_tokens = usage["completion_tokens"]
+        return ChatCompletion(
+            content=normalized_content,
+            tool_calls=tuple(calls),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, object]],
+        max_tokens: int | None = None,
+        tools: list[dict[str, object]] | None = None,
+        on_content_delta: Callable[[str], None] | None = None,
+    ) -> ChatCompletion:
+        """Consume llama.cpp's SSE stream while exposing text deltas immediately."""
+        payload: dict[str, object] = {
+            "messages": messages,
+            "max_tokens": (
+                max_tokens if max_tokens is not None else self.settings.llama_n_predict
+            ),
+            "temperature": self.settings.llama_temperature,
+            "seed": self.settings.llama_seed,
+            "cache_prompt": self.settings.llama_cache_prompt,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload.update(
+                {
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                }
+            )
+
+        content_parts: list[str] = []
+        calls: dict[int, dict[str, str]] = {}
+        prompt_tokens = 0
+        completion_tokens = 0
+        for event in self._request_sse(
+            "/v1/chat/completions",
+            payload,
+            timeout=self.settings.omni_timeout_seconds,
+        ):
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                if isinstance(usage.get("prompt_tokens"), int):
+                    prompt_tokens = usage["prompt_tokens"]
+                if isinstance(usage.get("completion_tokens"), int):
+                    completion_tokens = usage["completion_tokens"]
+
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+                if on_content_delta is not None:
+                    on_content_delta(content)
+            _merge_stream_tool_calls(calls, delta.get("tool_calls"))
+
+        content = "".join(content_parts).strip()
+        tool_calls = tuple(
+            ToolCall(
+                id=call.get("id") or f"call_{index}",
+                name=call.get("name", ""),
+                arguments=call.get("arguments") or "{}",
+            )
+            for index, call in sorted(calls.items())
+        )
+        if any(not call.name for call in tool_calls):
+            raise RuntimeError("llama-server streamed a tool call without a name.")
+        if not content and not tool_calls:
+            raise RuntimeError("llama-server returned an empty assistant stream.")
+        return ChatCompletion(
+            content=content or None,
+            tool_calls=tool_calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
     def _command(self) -> list[str]:
         command = [
@@ -257,6 +358,8 @@ class LlamaServer:
             str(self.settings.llama_parallel),
             "--threads",
             str(self.settings.llama_threads),
+            "--seed",
+            str(self.settings.llama_seed),
             "--jinja",
         ]
         command.append(
@@ -266,6 +369,11 @@ class LlamaServer:
         )
         if self.settings.llama_device:
             command.extend(["--device", self.settings.llama_device])
+        if self.settings.llama_slot_save_path:
+            self.settings.llama_slot_save_path.mkdir(parents=True, exist_ok=True)
+            command.extend(
+                ["--slot-save-path", str(self.settings.llama_slot_save_path)]
+            )
         if not self.settings.llama_op_offload:
             command.append("--no-op-offload")
         if not self.settings.llama_mmproj_offload:
@@ -273,6 +381,13 @@ class LlamaServer:
         if not self.settings.llama_warmup:
             command.append("--no-warmup")
         return command
+
+    def erase_slot(self, slot_id: int = 0) -> None:
+        self._request_json(
+            f"/slots/{slot_id}?action=erase",
+            {},
+            timeout=self.settings.omni_timeout_seconds,
+        )
 
     def _is_healthy(self) -> bool:
         try:
@@ -310,6 +425,38 @@ class LlamaServer:
             raise RuntimeError("llama-server response must be a JSON object.")
         return parsed
 
+    def _request_sse(
+        self,
+        path: str,
+        payload: dict[str, object],
+        timeout: int,
+    ) -> Iterator[dict[str, object]]:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    event = json.loads(data)
+                    if isinstance(event, dict):
+                        yield event
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"llama-server stream failed ({exc.code}): {detail}"
+            ) from exc
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"llama-server stream failed: {exc}") from exc
+
     @staticmethod
     def _log_tail(path: Path, lines: int = 30) -> str:
         if not path.exists():
@@ -346,16 +493,46 @@ def _parse_tool_calls(value: object) -> list[ToolCall]:
     return calls
 
 
+def _merge_stream_tool_calls(
+    accumulated: dict[int, dict[str, str]],
+    value: object,
+) -> None:
+    if not isinstance(value, list):
+        return
+    for fallback_index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        index = raw.get("index", fallback_index)
+        if not isinstance(index, int):
+            index = fallback_index
+        target = accumulated.setdefault(
+            index,
+            {"id": "", "name": "", "arguments": ""},
+        )
+        call_id = raw.get("id")
+        if isinstance(call_id, str):
+            target["id"] += call_id
+        function = raw.get("function")
+        source = function if isinstance(function, dict) else raw
+        name = source.get("name")
+        if isinstance(name, str):
+            target["name"] += name
+        arguments = source.get("arguments")
+        if isinstance(arguments, str):
+            target["arguments"] += arguments
+
+
 def _build_chat_messages(
     audio_data: str,
     history: list[dict[str, str]],
     system_prompt: str = DEFAULT_SYSTEM,
     prompt: str = DEFAULT_PROMPT,
+    response_first: bool = False,
 ) -> list[dict[str, object]]:
     system_instruction = (
         f"{system_prompt}\n\n"
         f"{prompt}\n\n"
-        f"{_structured_output_instruction()}"
+        f"{_structured_output_instruction(response_first=response_first)}"
     )
     messages: list[dict[str, object]] = [
         {"role": "system", "content": system_instruction},
