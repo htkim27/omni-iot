@@ -69,31 +69,6 @@
 uv run omni-iot --host 127.0.0.1 --port 8000
 ```
 
-### vLLM-Omni native audio streaming
-
-Qwen3-Omni의 native Talker/Code2Wav를 사용하려면 앱과 추론 서버를 별도 환경에서 실행합니다. 공식 vLLM-Omni 패키지는 Python 3.12 환경을 사용합니다.
-
-```bash
-uv venv .venv-vllm-omni --python 3.12 --seed
-uv pip install --python .venv-vllm-omni/bin/python vllm==0.28.0 --torch-backend=auto
-uv pip install --python .venv-vllm-omni/bin/python vllm-omni
-```
-
-`.env`에서 `OMNI_BACKEND=vllm_omni`를 선택하고, 첫 번째 터미널에서 모델 서버를 시작합니다. 실행 스크립트는 vLLM이 기본 제공하는 `--cpu-offload-gb`만 사용합니다.
-
-```bash
-chmod +x scripts/run_vllm_omni.sh
-scripts/run_vllm_omni.sh
-```
-
-두 번째 터미널에서 웹 앱을 실행합니다.
-
-```bash
-uv run omni-iot --host 127.0.0.1 --port 8000
-```
-
-이 모드의 출력 경로는 `Qwen3-Omni Thinker → Talker → Code2Wav → vLLM SSE audio chunk → PCM WebSocket → AudioWorklet`입니다. 완성된 WAV URL이나 외부 TTS를 기다리지 않고 첫 PCM 청크부터 재생하며, `.runtime/<turn_id>/timings.json`에 첫 오디오 준비 시간과 브라우저 실제 재생 시작 시간을 기록합니다.
-
 1. 브라우저에서 `http://127.0.0.1:8000`에 접속하여 **Start** 버튼을 누르고 마이크 권한을 허용합니다.
 2. 화면에 `Say "오둥아"` 상태가 표시되면 **"오둥아"**라고 부르고 잠시 멈춥니다.
 3. `Listening for command`가 나타나면 **"에어컨 켜줘"** 등 원하는 명령을 말합니다.

@@ -127,17 +127,6 @@ class Settings:
     tts_backend: str = os.getenv("TTS_BACKEND", "command").lower()
     tts_command: str | None = os.getenv("TTS_COMMAND") or None
     omni_timeout_seconds: int = _int_env("OMNI_TIMEOUT_SECONDS", 180)
-    vllm_omni_base_url: str = os.getenv(
-        "VLLM_OMNI_BASE_URL", "http://127.0.0.1:8091/v1"
-    ).rstrip("/")
-    vllm_omni_model: str = str(
-        _path_env(
-            "VLLM_OMNI_MODEL",
-            PROJECT_ROOT / "models" / "Qwen3-Omni-30B-A3B-Instruct-NVFP4",
-        )
-    )
-    vllm_omni_api_key: str = os.getenv("VLLM_OMNI_API_KEY", "EMPTY")
-    vllm_omni_speaker: str = os.getenv("VLLM_OMNI_SPEAKER", "Ethan")
     tts_timeout_seconds: int = _int_env("TTS_TIMEOUT_SECONDS", 180)
     omnivoice_model_id: str = os.getenv("OMNIVOICE_MODEL_ID", "k2-fsa/OmniVoice")
     omnivoice_language: str | None = os.getenv("OMNIVOICE_LANGUAGE", "ko") or None
@@ -183,10 +172,8 @@ def get_settings() -> Settings:
         raise ValueError("MCP_BRAVE_SEARCH_MAX_RESULTS must be between 1 and 20.")
     if settings.mcp_max_tool_rounds < 1 or settings.mcp_max_tool_calls < 1:
         raise ValueError("MCP tool round and call limits must be positive.")
-    if settings.omni_backend not in {"command", "server", "vllm_omni"}:
-        raise ValueError(
-            "OMNI_BACKEND must be 'command', 'server', or 'vllm_omni'."
-        )
+    if settings.omni_backend not in {"command", "server"}:
+        raise ValueError("OMNI_BACKEND must be either 'command' or 'server'.")
     if not 16 <= settings.llama_n_predict <= 512:
         raise ValueError("LLAMA_N_PREDICT must be between 16 and 512.")
     if not 0 <= settings.llama_temperature <= 2:

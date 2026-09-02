@@ -50,8 +50,6 @@ let lastUtteranceVoiceAt = 0;
 let awaitingCommandVoice = false;
 let commandArmed = false;
 let stopping = false;
-let pcmStreamPlayer;
-let pcmStreamChain = Promise.resolve();
 
 thresholdValue.value = threshold.toFixed(2);
 
@@ -124,7 +122,6 @@ function connectAudioSocket() {
   return new Promise((resolve, reject) => {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws";
     socket = new WebSocket(`${scheme}://${window.location.host}/ws/audio`);
-    socket.binaryType = "arraybuffer";
 
     socket.onopen = () => {
       socket.send(JSON.stringify({
@@ -155,8 +152,6 @@ async function stopHarness() {
   window.speechSynthesis?.cancel();
   replyAudio.pause();
   replyAudio.removeAttribute("src");
-  await pcmStreamPlayer?.stop();
-  pcmStreamPlayer = undefined;
 
   if (socket?.readyState === WebSocket.OPEN) {
     socket.close(1000, "client stopped");
@@ -278,16 +273,6 @@ function finishSpeech() {
 }
 
 function handleServerMessage(event) {
-  if (event.data instanceof ArrayBuffer) {
-    queuePcmStreamAction(async () => {
-      if (!pcmStreamPlayer) {
-        throw new Error("PCM audio arrived before audio_stream_start.");
-      }
-      pcmStreamPlayer.push(event.data);
-    });
-    return;
-  }
-
   let payload;
   try {
     payload = JSON.parse(event.data);
@@ -326,51 +311,11 @@ function handleServerMessage(event) {
     pendingUserTurn = undefined;
     addTurn("assistant", payload.text, payload.timings);
     void playReply(payload);
-  } else if (payload.type === "audio_stream_start") {
-    queuePcmStreamAction(async () => {
-      await pcmStreamPlayer?.stop();
-      pcmStreamPlayer = new PcmStreamPlayer(
-        Number(payload.sample_rate),
-        () => reportStreamingPlaybackStarted(payload.turn_id),
-        finishAssistantReply,
-      );
-      await pcmStreamPlayer.start();
-      setState("speaking", "Speaking");
-    });
-  } else if (payload.type === "audio_stream_end") {
-    if (payload.user_text) {
-      updateTurn(pendingUserTurn, payload.user_text);
-    }
-    pendingUserTurn = undefined;
-    addTurn("assistant", payload.text || "Voice response", payload.timings);
-    queuePcmStreamAction(async () => pcmStreamPlayer?.end());
   } else if (payload.type === "session_reset") {
     turnList.replaceChildren();
   } else if (payload.type === "error") {
     addTurn("system", payload.message || "Audio pipeline error");
   }
-}
-
-function queuePcmStreamAction(action) {
-  pcmStreamChain = pcmStreamChain.then(action).catch((error) => {
-    addTurn("system", `Streaming playback failed: ${error.message || error}`);
-    void pcmStreamPlayer?.stop();
-    pcmStreamPlayer = undefined;
-    finishAssistantReply();
-  });
-}
-
-function reportStreamingPlaybackStarted(turnId) {
-  if (!lastUtteranceVoiceAt) {
-    return;
-  }
-  const elapsed = (performance.now() - lastUtteranceVoiceAt) / 1000;
-  socket?.send(JSON.stringify({
-    type: "playback_started",
-    turn_id: turnId,
-    browser_speech_end_to_audio_start_seconds: Number(elapsed.toFixed(3)),
-  }));
-  lastUtteranceVoiceAt = 0;
 }
 
 function applyServerState(serverState) {
@@ -447,8 +392,6 @@ function stopAssistantAudio() {
   replyAudio.pause();
   replyAudio.removeAttribute("src");
   window.speechSynthesis?.cancel();
-  void pcmStreamPlayer?.stop();
-  pcmStreamPlayer = undefined;
 }
 
 function beginFollowUpWindow() {
@@ -628,98 +571,5 @@ class Pcm16Resampler {
   reset() {
     this.pending = new Float32Array(0);
     this.position = 0;
-  }
-}
-
-class PcmStreamPlayer {
-  constructor(sourceRate, onPlaying, onDrained) {
-    this.sourceRate = sourceRate;
-    this.onPlaying = onPlaying;
-    this.onDrained = onDrained;
-    this.context = undefined;
-    this.node = undefined;
-    this.resampler = undefined;
-  }
-
-  async start() {
-    this.context = new AudioContext({
-      sampleRate: this.sourceRate,
-      latencyHint: "interactive",
-    });
-    await this.context.audioWorklet.addModule("/static/pcm-player-worklet.js");
-    this.node = new AudioWorkletNode(this.context, "pcm-stream-player", {
-      outputChannelCount: [1],
-    });
-    this.node.port.onmessage = (event) => {
-      if (event.data?.type === "playing") {
-        this.onPlaying();
-      } else if (event.data?.type === "drained") {
-        this.onDrained();
-        void this.stop();
-      }
-    };
-    this.node.connect(this.context.destination);
-    if (this.context.sampleRate !== this.sourceRate) {
-      this.resampler = new Float32StreamResampler(
-        this.sourceRate,
-        this.context.sampleRate,
-      );
-    }
-    await this.context.resume();
-  }
-
-  push(arrayBuffer) {
-    if (!this.node) {
-      throw new Error("PCM stream player is not ready.");
-    }
-    const pcm = new Int16Array(arrayBuffer);
-    const float = new Float32Array(pcm.length);
-    for (let index = 0; index < pcm.length; index += 1) {
-      float[index] = pcm[index] < 0 ? pcm[index] / 0x8000 : pcm[index] / 0x7fff;
-    }
-    const samples = this.resampler ? this.resampler.process(float) : float;
-    if (samples.length > 0) {
-      this.node.port.postMessage({ type: "push", samples }, [samples.buffer]);
-    }
-  }
-
-  end() {
-    this.node?.port.postMessage({ type: "end" });
-  }
-
-  async stop() {
-    const context = this.context;
-    this.node?.port.postMessage({ type: "reset" });
-    this.node?.disconnect();
-    this.node = undefined;
-    this.context = undefined;
-    if (context && context.state !== "closed") {
-      await context.close();
-    }
-  }
-}
-
-class Float32StreamResampler {
-  constructor(inputRate, outputRate) {
-    this.ratio = inputRate / outputRate;
-    this.pending = new Float32Array(0);
-    this.position = 0;
-  }
-
-  process(input) {
-    const joined = new Float32Array(this.pending.length + input.length);
-    joined.set(this.pending);
-    joined.set(input, this.pending.length);
-    const samples = [];
-    while (this.position + 1 < joined.length) {
-      const left = Math.floor(this.position);
-      const fraction = this.position - left;
-      samples.push(joined[left] + (joined[left + 1] - joined[left]) * fraction);
-      this.position += this.ratio;
-    }
-    const consumed = Math.min(Math.floor(this.position), joined.length - 1);
-    this.pending = joined.slice(consumed);
-    this.position -= consumed;
-    return Float32Array.from(samples);
   }
 }
