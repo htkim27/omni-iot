@@ -2,9 +2,9 @@
 
 RTX 5070 Ti에서 GPU offloading과 Flash Attention을 360회 측정해 봤다
 
-> 측정일: 2026-09-01~02  
-> GPU: NVIDIA GeForce RTX 5070 Ti 16GB  
-> 모델: Qwen3-Omni-30B-A3B-Instruct Q4_K_M GGUF + Q8 mmproj  
+> 측정일: 2026-09-01~02
+> GPU: NVIDIA GeForce RTX 5070 Ti 16GB
+> 모델: Qwen3-Omni-30B-A3B-Instruct Q4_K_M GGUF + Q8 mmproj
 > 런타임: llama.cpp build 10460 (`373336672`)
 
 ## 먼저 결론
