@@ -111,9 +111,15 @@ class Settings:
     llama_ctx_size: int = _int_env("LLAMA_CTX_SIZE", 4096)
     llama_n_predict: int = _int_env("LLAMA_N_PREDICT", 192)
     llama_temperature: float = _float_env("LLAMA_TEMPERATURE", 0.2)
+    llama_seed: int = _int_env("LLAMA_SEED", -1)
     llama_parallel: int = _int_env("LLAMA_PARALLEL", 1)
     llama_threads: int = _int_env("LLAMA_THREADS", 8)
     llama_cache_prompt: bool = _bool_env("LLAMA_CACHE_PROMPT", True)
+    llama_slot_save_path: Path | None = (
+        _path_env("LLAMA_SLOT_SAVE_PATH", PROJECT_ROOT / ".runtime/slot-cache")
+        if os.getenv("LLAMA_SLOT_SAVE_PATH")
+        else None
+    )
     llama_flash_attn: str = os.getenv("LLAMA_FLASH_ATTN", "off")
     llama_warmup: bool = os.getenv("LLAMA_WARMUP", "false").lower() in {
         "1", "true", "yes", "on",

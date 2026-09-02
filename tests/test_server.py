@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from omni_iot.pipeline import TurnResult
-from omni_iot.server import _int_header, app, client_config, settings as server_settings
+from omni_iot.server import (
+    _int_header,
+    _record_browser_playback_timing,
+    app,
+    client_config,
+    settings as server_settings,
+)
 from omni_iot.wakeword import WakeDetection
 
 
@@ -22,6 +30,29 @@ def _request(**headers: str) -> Request:
 
 
 class ClientConfigTest(unittest.TestCase):
+    def test_records_browser_audio_start_against_the_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_dir = Path(temp_dir)
+            turn_id = "a" * 32
+            turn_dir = runtime_dir / turn_id
+            turn_dir.mkdir()
+            timing_path = turn_dir / "timings.json"
+            timing_path.write_text('{"total_seconds": 2.0}', encoding="utf-8")
+            benchmark_settings = replace(server_settings, runtime_dir=runtime_dir)
+
+            with patch("omni_iot.server.settings", benchmark_settings):
+                _record_browser_playback_timing(
+                    {
+                        "turn_id": turn_id,
+                        "browser_speech_end_to_audio_start_seconds": 2.643,
+                    }
+                )
+
+            timings = json.loads(timing_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                timings["browser_speech_end_to_audio_start_seconds"], 2.643
+            )
+
     def test_exposes_only_browser_safe_defaults(self) -> None:
         payload = json.loads(client_config().body)
 
@@ -111,7 +142,6 @@ class AudioWebSocketTest(unittest.TestCase):
             self.assertEqual(websocket.receive_json()["state"], "follow_up")
             websocket.send_json({"type": "sleep"})
             self.assertEqual(websocket.receive_json()["state"], "sleeping")
-
 
 if __name__ == "__main__":
     unittest.main()

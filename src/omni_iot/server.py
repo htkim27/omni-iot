@@ -291,6 +291,8 @@ async def audio_stream(websocket: WebSocket) -> None:
             elif event_type == "reply_ended" and state == "speaking":
                 state = "follow_up"
                 await websocket.send_json({"type": "state", "state": state})
+            elif event_type == "playback_started":
+                _record_browser_playback_timing(event)
             elif event_type == "sleep":
                 state = "sleeping"
                 audio_buffer.clear()
@@ -445,6 +447,34 @@ def _is_runtime_child(path: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _record_browser_playback_timing(event: dict[str, object]) -> None:
+    turn_id = event.get("turn_id")
+    seconds = event.get("browser_speech_end_to_audio_start_seconds")
+    if (
+        not isinstance(turn_id, str)
+        or len(turn_id) != 32
+        or not all(character in "0123456789abcdef" for character in turn_id)
+        or isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not 0 <= seconds <= settings.omni_timeout_seconds + settings.tts_timeout_seconds
+    ):
+        return
+    timing_path = settings.runtime_dir / turn_id / "timings.json"
+    if not _is_runtime_child(timing_path) or not timing_path.exists():
+        return
+    try:
+        timings = json.loads(timing_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(timings, dict):
+        return
+    timings["browser_speech_end_to_audio_start_seconds"] = round(float(seconds), 3)
+    timing_path.write_text(
+        json.dumps(timings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _turn_payload(result: TurnResult, audio_url: str | None) -> dict[str, object]:

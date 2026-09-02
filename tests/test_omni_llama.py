@@ -46,6 +46,7 @@ class OmniLlamaTest(unittest.TestCase):
             audio_path.write_bytes(b"wav")
             server = LlamaServer(Settings(runtime_dir=runtime_dir))
             response = {
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
                 "choices": [
                     {
                         "message": {
@@ -57,11 +58,15 @@ class OmniLlamaTest(unittest.TestCase):
 
             with patch.object(server, "_request_json", return_value=response) as request:
                 result = json.loads(server.generate(audio_path, [], max_tokens=96))
+                payload = request.call_args.args[1]
+                completion = server.chat([{"role": "user", "content": "hi"}])
 
             self.assertEqual(result, {"user_text": "안녕", "text": "반가워요."})
-            payload = request.call_args.args[1]
             self.assertTrue(payload["cache_prompt"])
             self.assertEqual(payload["max_tokens"], 96)
+            self.assertEqual(payload["seed"], -1)
+            self.assertEqual(completion.prompt_tokens, 100)
+            self.assertEqual(completion.completion_tokens, 20)
 
     def test_chat_sends_tool_options_and_normalizes_nested_calls(self) -> None:
         server = LlamaServer(Settings())
@@ -121,6 +126,57 @@ class OmniLlamaTest(unittest.TestCase):
 
         self.assertEqual(completion.tool_calls[0].id, "call_0")
         self.assertEqual(json.loads(completion.tool_calls[0].arguments), {"text": "hi"})
+
+    def test_chat_stream_forwards_content_and_assembles_tool_arguments(self) -> None:
+        server = LlamaServer(Settings())
+        events = [
+            {"choices": [{"delta": {"content": '{"response":"안'}}]},
+            {"choices": [{"delta": {"content": '녕"}'}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "fixture__echo",
+                                        "arguments": '{"text":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"hi"}'}}
+                            ]
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+            },
+        ]
+        deltas: list[str] = []
+
+        with patch.object(server, "_request_sse", return_value=iter(events)) as request:
+            completion = server.chat_stream(
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=deltas.append,
+            )
+
+        self.assertEqual(deltas, ['{"response":"안', '녕"}'])
+        self.assertEqual(completion.content, '{"response":"안녕"}')
+        self.assertEqual(completion.tool_calls[0].name, "fixture__echo")
+        self.assertEqual(completion.tool_calls[0].arguments, '{"text":"hi"}')
+        self.assertEqual(completion.prompt_tokens, 9)
+        self.assertTrue(request.call_args.args[1]["stream"])
 
     def test_managed_server_always_enables_jinja(self) -> None:
         command = LlamaServer(Settings())._command()

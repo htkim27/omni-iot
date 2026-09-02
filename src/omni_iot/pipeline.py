@@ -92,6 +92,9 @@ async def run_turn_pipeline(
             max_tokens=max_tokens,
         )
     omni_elapsed = time.perf_counter() - omni_started_at
+    agent_timings = (
+        generation.timings or {} if settings.omni_backend == "server" else {}
+    )
 
     if session:
         session.add_user_audio_turn(omni_result.user_text)
@@ -107,6 +110,17 @@ async def run_turn_pipeline(
     )
     tts_elapsed = time.perf_counter() - tts_started_at
 
+    timings = {
+        "omni_seconds": round(omni_elapsed, 3),
+        "tts_seconds": round(tts_elapsed, 3),
+        "total_seconds": round(time.perf_counter() - started_at, 3),
+        **agent_timings,
+    }
+    (turn_dir / "timings.json").write_text(
+        json.dumps(timings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     return TurnResult(
         turn_id=turn_id,
         text=omni_result.text,
@@ -114,11 +128,7 @@ async def run_turn_pipeline(
         audio_path=audio_path,
         used_mock_omni=omni_result.used_mock,
         used_tts=audio_path is not None,
-        timings={
-            "omni_seconds": round(omni_elapsed, 3),
-            "tts_seconds": round(tts_elapsed, 3),
-            "total_seconds": round(time.perf_counter() - started_at, 3),
-        },
+        timings=timings,
     )
 
 

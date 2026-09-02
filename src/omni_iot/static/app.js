@@ -46,6 +46,7 @@ let speechStartedAt = 0;
 let lastVoiceAt = 0;
 let latestRms = 0;
 let pendingUserTurn;
+let lastUtteranceVoiceAt = 0;
 let awaitingCommandVoice = false;
 let commandArmed = false;
 let stopping = false;
@@ -264,6 +265,7 @@ function finishSpeech() {
   clearTimeout(commandWaitTimer);
   awaitingCommandVoice = false;
   commandArmed = false;
+  lastUtteranceVoiceAt = lastVoiceAt;
   pendingUserTurn = addTurn("user", "Voice turn");
   setState("processing", "Thinking");
   socket.send(JSON.stringify({ type: "speech_ended" }));
@@ -339,6 +341,21 @@ async function playReply(payload) {
     replyAudio.src = payload.url || payload.audio_url;
     replyAudio.currentTime = 0;
     replyAudio.onended = finishAssistantReply;
+    replyAudio.onplaying = () => {
+      if (!lastUtteranceVoiceAt) {
+        return;
+      }
+      const speechEndToAudioStartSeconds =
+        (performance.now() - lastUtteranceVoiceAt) / 1000;
+      socket?.send(JSON.stringify({
+        type: "playback_started",
+        turn_id: payload.turn_id,
+        browser_speech_end_to_audio_start_seconds:
+          Number(speechEndToAudioStartSeconds.toFixed(3)),
+      }));
+      lastUtteranceVoiceAt = 0;
+      replyAudio.onplaying = null;
+    };
     try {
       await replyAudio.play();
     } catch (error) {
@@ -371,6 +388,7 @@ function finishAssistantReply() {
 
 function stopAssistantAudio() {
   replyAudio.onended = null;
+  replyAudio.onplaying = null;
   replyAudio.pause();
   replyAudio.removeAttribute("src");
   window.speechSynthesis?.cancel();
